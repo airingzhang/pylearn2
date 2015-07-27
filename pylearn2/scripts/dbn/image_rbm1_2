@@ -1,0 +1,113 @@
+!obj:pylearn2.train.Train {
+   
+    dataset: &train !obj:pylearn2.datasets.flickr_image_toronto.Flickr_Image_Toronto {
+        which_cat: 'unlabelled',
+        start: 0,
+        using_statisfile: True
+    },
+    model: !obj:pylearn2.models.rbm.GaussianBinaryRBM {
+
+        # The RBM needs 3857 visible units (its inputs are 8x8 patches with 3
+        # color channels)
+        nvis : 3857,
+
+        # We'll use 400 hidden units for this RBM. That's a small number but we
+        # want this example script to train quickly.
+        nhid : %(nhid)i,
+
+        # The elements of the weight matrices of the RBM will be drawn
+        # independently from U(-0.05, 0.05)
+        irange : 0.05,
+
+        # There are many ways to parameterize a GRBM. Here we use a
+        # parameterization that makes the correspondence to denoising
+        # autoencoders more clear.
+        energy_function_class : !obj:pylearn2.energy_functions.rbm_energy.grbm_type_1 {},
+
+        # Some learning algorithms are capable of estimating the standard
+        # deviation of the visible units of a GRBM successfully, others are not
+        # and just fix the standard deviation to 1.  We're going to show off
+        # and learn the standard deviation.
+        learn_sigma : False,
+
+        # Learning works better if we provide a smart initialization for the
+        # parameters.  Here we start sigma at .4 , which is about the same
+        # standard deviation as the training data. We start the biases on the
+        # hidden units at -2, which will make them have fairly sparse
+        # activations.
+        init_sigma : 1,
+        init_bias_hid : -2.,
+
+        # Some GRBM training algorithms can't handle the visible units being
+        # noisy and just use their mean for all computations. We will show off
+        # and not use that hack here.
+        mean_vis : False,
+
+        # One hack we will make is we will scale back the gradient steps on the
+        # sigma parameter. This way we don't need to worry about sigma getting
+        # too small prematurely (if it gets too small too fast the learning
+        # signal gets weak).
+        # sigma_lr_scale : 1e-3
+
+    },
+    
+    # We train the model using stochastic gradient descent.
+    # One benefit of using pylearn2 is that we can use the exact same piece of
+    # code to train a DBM as to train an MLP. The interface that SGD uses to get
+    # the gradient of the cost function from an MLP can also get the *approximate*
+    # gradient from a DBM.
+    algorithm: !obj:pylearn2.training_algorithms.sgd.SGD {
+               # We initialize the learning rate and momentum here. Down below
+               # we can control the way they decay with various callbacks.
+               learning_rate: 1e-3,
+               batch_size: %(batch_size)i,
+               # Compute new model parameters using SGD + Momentum
+               learning_rule: !obj:pylearn2.training_algorithms.learning_rule.Momentum {
+                   init_momentum: 0.5,
+               },
+               # These arguments say to compute the monitoring channels on 10 batches
+               # of the training set.
+               monitoring_batches: %(monitoring_batches)i,
+               monitoring_dataset : *train,
+               # The SumOfCosts allows us to add together a few terms to make a complicated
+               # cost function.
+               cost : !obj:pylearn2.costs.cost.SumOfCosts {
+                costs: [
+                        !obj:pylearn2.costs.ebm_estimation.CDk {
+                           # Here we specify how many fantasy particles to maintain
+                           nsteps: 1,
+                         
+                        },
+                        # The second term of our cost function is a little bit of weight
+                        # decay.
+                        !obj:pylearn2.costs.dbm.WeightDecay {
+                          coeffs: [ .0001  ]
+                        },
+                        # Finally, we regularize the RBM to sparse, using a method copied
+                        # from Ruslan Salakhutdinov's DBM demo
+                        !obj:pylearn2.costs.dbm.TorontoSparsity {
+                         targets: [ .2 ],
+                         coeffs: [ .001 ],
+                        }
+                       ],
+           },
+           # We tell the RBM to train for 10000 epochs
+           termination_criterion: !obj:pylearn2.termination_criteria.EpochCounter { max_epochs: %(max_epochs)i },
+        },
+    extensions: [
+            # This callback makes the momentum grow to 0.9 linearly. It starts
+            # growing at epoch 5 and finishes growing at epoch 6.
+            !obj:pylearn2.training_algorithms.learning_rule.MomentumAdjustor {
+                final_momentum: .9,
+                start: 1,
+                saturate: 10000
+            },
+            !obj:pylearn2.training_algorithms.sgd.OneOverEpoch {
+             start: 0,
+             half_life: 10000
+        	}
+    ],
+    save_path: "%(save_path)s/image_rbm1.pkl",
+    # This says to save it every epoch
+    save_freq : 1
+}

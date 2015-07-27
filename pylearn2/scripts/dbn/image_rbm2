@@ -1,0 +1,188 @@
+!obj:pylearn2.train.Train {
+    dataset: &train !obj:pylearn2.datasets.transformer_dataset.TransformerDataset {
+        raw: !obj:pylearn2.datasets.Flickr_Image_Toronto {
+            which_cat: 'unlabelled',
+            start: 0,
+        },
+        transformer: !pkl: "%(save_path)s/image_rbm1.pkl"
+    },
+    model: !obj:pylearn2.models.dbm.DBM {
+        batch_size: 100,
+        # 1 mean field iteration reaches convergence in the RBM
+        niter: 1,
+        visible_layer: !obj:pylearn2.models.dbm.BinaryVector {
+            nvis: %(nvis)i,
+            # We can initialize the biases of the visible units
+            # so that sigmoid(b_i) = E[v_i] where the expectation
+            # is taken over the dataset. This should get the biases
+            # about correct from the start and helps speed up learning.
+            bias_from_marginals: *train,
+        },
+
+        hidden_layers: [
+            # This RBM has one hidden layer, consisting of a binary vector.
+            # Optionally, one can do max pooling on top of this vector, but
+            # here we don't, by setting pool_size = 1.
+            !obj:pylearn2.models.dbm.BinaryVectorMaxPool {
+                # Every layer in the DBM must have a layer_name field.
+                # These are used to generate unique names of monitoring
+                # channels associated with the different layers.
+                layer_name: 'h1',
+                # The detector layer is the portion of this layer that
+                # precedes the pooling. We control its size with this
+                # argument. Here we request 2048 hidden units.
+                detector_layer_dim: %(nhid)i,
+                pool_size: 1,
+                # We initialize the weights by drawing them from W_ij ~ U(-irange, irange)
+                irange: .05,
+                # We initialize all the biases of the hidden units to a negative
+                # number. This helps to learn a sparse representation.
+                init_bias: -2.,
+            }
+       ]
+    },
+    # We train the model using stochastic gradient descent.
+    # One benefit of using pylearn2 is that we can use the exact same piece of
+    # code to train a DBM as to train an MLP. The interface that SGD uses to get
+    # the gradient of the cost function from an MLP can also get the *approximate*
+    # gradient from a DBM.
+    algorithm: !obj:pylearn2.training_algorithms.sgd.SGD {
+               # We initialize the learning rate and momentum here. Down below
+               # we can control the way they decay with various callbacks.
+               learning_rate: 1e-3,
+               # Compute new model parameters using SGD + Momentum
+               learning_rule: !obj:pylearn2.training_algorithms.learning_rule.Momentum {
+                   init_momentum: 0.5,
+               },
+               # These arguments say to compute the monitoring channels on 10 batches
+               # of the training set.
+               monitoring_batches: %(monitoring_batches)i,
+               monitoring_dataset : *train,
+               # The SumOfCosts allows us to add together a few terms to make a complicated
+               # cost function.
+               cost : !obj:pylearn2.costs.cost.SumOfCosts {
+                costs: [
+                        # The first term of our cost function is variational PCD.
+                        # For the RBM, the variational approximation is exact, so
+                        # this is really just PCD. In deeper models, it means we
+                        # use mean field rather than Gibbs sampling in the positive phase.
+                        !obj:pylearn2.costs.dbm.VariationalPCD {
+                           # Here we specify how many fantasy particles to maintain
+                           num_chains: %(num_chains)i,
+                           # Here we specify how many steps of Gibbs sampling to do between
+                           # each parameter update.
+                           num_gibbs_steps: %(num_gibbs_steps)i,
+                        },
+                        # The second term of our cost function is a little bit of weight
+                        # decay.
+                        !obj:pylearn2.costs.dbm.WeightDecay {
+                          coeffs: [ .0001  ]
+                        },
+                        # Finally, we regularize the RBM to sparse, using a method copied
+                        # from Ruslan Salakhutdinov's DBM demo
+                        !obj:pylearn2.costs.dbm.TorontoSparsity {
+                         targets: [ .1 ],
+                         coeffs: [ .001 ],
+                        }
+                       ],
+           },
+           # We tell the RBM to train for 300 epochs
+           termination_criterion: !obj:pylearn2.termination_criteria.EpochCounter { max_epochs: %(max_epochs)i },
+        },
+    extensions: [
+            # This callback makes the momentum grow to 0.9 linearly. It starts
+            # growing at epoch 5 and finishes growing at epoch 6.
+            !obj:pylearn2.training_algorithms.learning_rule.MomentumAdjustor {
+                final_momentum: .9,
+                start: 1,
+                saturate: 10000
+            },
+            !obj:pylearn2.training_algorithms.sgd.OneOverEpoch {
+             start: 0,
+             half_life: 10000
+        	}
+    ],
+    save_path: "%(save_path)s/image_rbm2.pkl",
+    # This says to save it every epoch
+    save_freq : 1
+}
+
+
+
+
+
+
+
+
+
+name: "image_rbm2"
+model_type: DBM
+hyperparams {
+  base_epsilon: 0.05
+  epsilon_decay : INVERSE_T
+  epsilon_decay_half_life : 10000
+  initial_momentum : 0.5
+  final_momentum : 0.9
+  momentum_change_steps : 10000
+  sparsity : true
+  sparsity_target : 0.1
+  sparsity_cost : 0.01
+  sparsity_damping : 0.9
+  apply_l2_decay: true
+  l2_decay: 0.001
+  activation: LOGISTIC
+  mf_steps: 1
+  gibbs_steps: 1
+  start_step_up_cd_after: 15000
+  step_up_cd_after: 5000
+}
+
+layer {
+  name: "image_hidden1"
+  dimensions: 2048
+  is_input: true
+  param {
+    name: "bias"
+    initialization: CONSTANT
+  }
+  loss_function: SQUARED_LOSS
+  data_field {
+    train: "image_hidden1_train"
+    validation: "image_hidden1_validation"
+  }
+  performance_stats {
+    compute_error: true
+  }
+  hyperparams {
+    sparsity : false
+    apply_l2_decay: false
+    enable_display: false
+  }
+}
+
+layer {
+  name: "image_hidden2"
+  dimensions: 1024
+  param {
+    name: "bias"
+    initialization: CONSTANT
+  }
+  performance_stats {
+    compute_sparsity: true
+  }
+  hyperparams {
+    apply_l2_decay: false
+    enable_display: false
+  }
+}
+
+edge {
+  node1: "image_hidden1"
+  node2: "image_hidden2"
+  directed: false
+  param {
+    name: "weight"
+    initialization: DENSE_GAUSSIAN_SQRT_FAN_IN
+    sigma : 1.0
+  }
+}
