@@ -1,6 +1,7 @@
 """
 Classes that implement different sampling algorithms for DBMs.
 """
+from pylearn2.models.dbm.layer import ReplicatedSoftMaxLayer
 __authors__ = ["Ian Goodfellow", "Vincent Dumoulin"]
 __copyright__ = "Copyright 2012-2013, Universite de Montreal"
 __credits__ = ["Ian Goodfellow"]
@@ -67,11 +68,9 @@ class GibbsEvenOdd(SamplingProcedure):
     """
 
     def sample(self, layer_to_state, theano_rng, layer_to_clamp=None,
-               num_steps=1):
+               num_steps=1, D_is_initialized = False):
         """
-        .. todo::
-
-            WRITEME
+        Modified by Ning Zhang: making it compatible with replicated softmax layer
         """
         # Validate num_steps
         assert isinstance(num_steps, py_integer_types)
@@ -116,7 +115,10 @@ class GibbsEvenOdd(SamplingProcedure):
             else:
                 layer_below = self.dbm.hidden_layers[i-1]
             state_below = layer_to_state[layer_below]
-            state_below = layer_below.upward_state(state_below)
+            if type(layer_below) is ReplicatedSoftMaxLayer:
+                state_below, D = layer_below.upward_state(state_below, D_is_initialized)
+            else:
+                state_below = layer_below.upward_state(state_below)
 
             # Get the sampled state of the layer above so we can condition
             # on it in our Gibbs step
@@ -136,10 +138,16 @@ class GibbsEvenOdd(SamplingProcedure):
                 # Sample the state of this layer conditioned
                 # on its Markov blanket (the layer above and
                 # layer below)
-                this_sample = this_layer.sample(state_below=state_below,
-                                                state_above=state_above,
-                                                layer_above=layer_above,
-                                                theano_rng=theano_rng)
+                if type(layer_below) is ReplicatedSoftMaxLayer:
+                    this_sample = this_layer.sample(state_below=state_below,
+                                                    state_above=state_above,
+                                                    layer_above=layer_above,
+                                                    theano_rng=theano_rng, D = D)
+                else:
+                    this_sample = this_layer.sample(state_below=state_below,
+                                                    state_above=state_above,
+                                                    layer_above=layer_above,
+                                                    theano_rng=theano_rng)
 
             layer_to_updated[this_layer] = this_sample
 

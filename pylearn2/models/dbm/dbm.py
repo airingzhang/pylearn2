@@ -1,6 +1,7 @@
 """
 The main DBM class
 """
+from pylearn2.blocks import theano
 __authors__ = ["Ian Goodfellow", "Vincent Dumoulin"]
 __copyright__ = "Copyright 2012-2013, Universite de Montreal"
 __credits__ = ["Ian Goodfellow"]
@@ -12,6 +13,7 @@ import logging
 import operator
 import numpy as np
 
+import theano
 from theano.compat.six.moves import reduce, xrange
 from theano import tensor as T, config
 
@@ -552,7 +554,7 @@ class DBM(Model):
         """
 
         updated = self.sampling_procedure.sample(layer_to_state, theano_rng,
-                                                 layer_to_clamp, num_steps)
+                                                 layer_to_clamp, num_steps, D_is_initialized = True)
 
         rval = OrderedDict()
 
@@ -695,3 +697,17 @@ class DBM(Model):
         """
         self.setup_inference_procedure()
         return self.inference_procedure.do_inpainting(*args, **kwargs)
+    
+    def perform(self, X_raw):
+        """
+        added by Ning Zhang 
+        this method is used communicate with the Transformer.get_design_matrix()
+        Todo: save intermediate results to avoid repeating this step  
+        
+        """
+        inputs = T.matrix()
+        H_hat = self.inference_procedure.mf(inputs,niter=1)
+        r_val = H_hat[-1][0]
+        fn = theano.function([inputs], r_val,name='perform')
+        
+        return fn(X_raw)

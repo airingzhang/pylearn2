@@ -1509,3 +1509,4 @@ class UpDown(InferenceProcedure):
             if Y is not None:
                 return V_hat, Y_hat
             return V_hat
+        

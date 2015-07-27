@@ -1226,11 +1226,11 @@ class BinaryVectorMaxPool(HiddenLayer):
 
     def sample(self, state_below = None, state_above = None,
             layer_above = None,
-            theano_rng = None):
+            theano_rng = None, D = None):
         """
         .. todo::
 
-            WRITEME
+        Modified by Ning Zhang, adding argument D to make it compatible with Replicated Softmax Layer
         """
         if self.copies != 1:
             raise NotImplementedError()
@@ -1245,8 +1245,12 @@ class BinaryVectorMaxPool(HiddenLayer):
 
         if self.requires_reformat:
             state_below = self.input_space.format_as(state_below, self.desired_space)
-
-        z = self.transformer.lmul(state_below) + self.b
+        
+        if D is not None:
+            self.D = D
+            z = self.transformer.lmul(state_below) + self.b * D
+        else:
+            z = self.transformer.lmul(state_below) + self.b 
         p, h, p_sample, h_sample = max_pool_channels(z,
                 self.pool_size, msg, theano_rng)
 
@@ -1303,8 +1307,11 @@ class BinaryVectorMaxPool(HiddenLayer):
         p_state = sharedX(empty_output)
 
         theano_rng = make_theano_rng(None, numpy_rng.randint(2 ** 16), which_method="binomial")
-
-        default_z = T.zeros_like(h_state) + self.b
+        
+        if self.D is not None:
+            default_z = T.zeros_like(h_state) + self.b * self.D
+        else:
+            default_z = T.zeros_like(h_state) + self.b
 
         p_exp, h_exp, p_sample, h_sample = max_pool_channels(
                 z = default_z,
@@ -1352,11 +1359,10 @@ class BinaryVectorMaxPool(HiddenLayer):
 
         return p_sample, h_sample
 
-    def expected_energy_term(self, state, average, state_below, average_below):
+    def expected_energy_term(self, state, average, state_below, average_below, D = None):
         """
         .. todo::
-
-            WRITEME
+        Modified by Ning Zhang, adding argument D
         """
 
         # Don't need to do anything special for centering, upward_state / downward state
@@ -1379,8 +1385,10 @@ class BinaryVectorMaxPool(HiddenLayer):
         # Energy function is linear so it doesn't matter if we're averaging or not
         # Specifically, our terms are -u^T W d - b^T d where u is the upward state of layer below
         # and d is the downward state of this layer
-
-        bias_term = T.dot(downward_state, self.b)
+        if D is not None:
+            bias_term = T.dot(downward_state, self.b * D)
+        else:
+            bias_term = T.dot(downward_state, self.b)
         weights_term = (self.transformer.lmul(state_below) * downward_state).sum(axis=1)
 
         rval = -bias_term - weights_term
@@ -2111,6 +2119,9 @@ class GaussianVisLayer(VisibleLayer):
         rval['beta_min'] = self.beta.min()
         rval['beta_mean'] = self.beta.mean()
         rval['beta_max'] = self.beta.max()
+        rval['mu_min'] = self.mu.min()
+        rval['mu_mean'] = self.mu.mean()
+        rval['mu_max'] = self.mu.max()
 
         return rval
 
@@ -2119,8 +2130,13 @@ class GaussianVisLayer(VisibleLayer):
         """
         .. todo::
 
-            WRITEME
+        modified by Ning Zhang:
+        if nvis is not None, we may can reduce such model to normal Gaussian Visual Layer in GBRBM
+        by standarize (zero mean and one variance) the training data before hand. 
         """
+        
+        if self.nvis is not None:
+            return []
         if self.mu is None:
             return [self.beta]
         return [self.beta, self.mu]
@@ -2390,6 +2406,12 @@ class GaussianVisLayer(VisibleLayer):
         assert total_state is not None
         V = total_state
         self.input_space.validate(V)
+        #=======================================================================
+        # if self.nvis is not None:
+        #     # do not minus mean 
+        #     upward_state = V * self.broadcasted_beta()
+        # else:
+        #=======================================================================
         upward_state = (V - self.broadcasted_mu()) * self.broadcasted_beta()
         return upward_state
 
@@ -4160,3 +4182,305 @@ class CompositeLayer(HiddenLayer):
             rval.append(sample)
 
         return tuple(rval)
+
+class ReplicatedSoftMaxLayer(VisibleLayer):
+    """
+    A DBM visible layer consisting of binary random variables living
+    in a VectorSpace.
+
+    Parameters
+    ----------
+    nvis : int
+        Dimension of the space
+    bias_from_marginals : pylearn2.datasets.dataset.Dataset
+        Dataset, whose marginals are used to initialize the visible biases
+    center : bool
+        If True, use Gregoire Montavon's centering trick
+    copies : int
+        Use this number of virtual copies of the state. All the copies
+        still share parameters. This can be useful for balancing the
+        amount of influencing two neighboring layers have on each other
+        if the layers have different numbers or different types of units.
+        Without this replication, layers with more units or units with
+        a greater dynamic range would dominate the interaction due to
+        the symmetric nature of undirected interactions.
+    """
+    def __init__(self,
+            n_labels,
+            bias_from_marginals = None,
+            center = False,
+            copies = 1, learn_init_inpainting_state = False):
+
+        super(ReplicatedSoftMaxLayer, self).__init__()
+        self.__dict__.update(locals())
+        del self.self
+        # Don't serialize the dataset
+        del self.bias_from_marginals
+
+        self.space = VectorSpace(n_labels)
+        self.input_space = self.space
+
+        origin = self.space.get_origin()
+
+        if bias_from_marginals is None:
+            init_bias = np.zeros((n_labels,))
+        else:
+            init_bias = init_sigmoid_bias_from_marginals(bias_from_marginals)
+
+        self.bias = sharedX(init_bias, 'visible_bias')
+
+        if center:
+            self.offset = sharedX(sigmoid_numpy(init_bias))
+
+    def get_biases(self):
+        """
+        Returns
+        -------
+        biases : ndarray
+            The numpy value of the biases
+        """
+        return self.bias.get_value()
+
+    def set_biases(self, biases, recenter=False):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        self.bias.set_value(biases)
+        if recenter:
+            assert self.center
+            self.offset.set_value(sigmoid_numpy(self.bias.get_value()))
+
+    def upward_state(self, total_state, D_is_initialized = False):
+        """
+        Here we need return a turple (upward_state, D)
+        """
+
+        if not hasattr(self, 'center'):
+            self.center = False
+
+        if self.center:
+            rval = total_state - self.offset
+        else:
+            rval = total_state
+
+        if not hasattr(self, 'copies'):
+            self.copies = 1
+            
+        if D_is_initialized:
+            assert(self.D is not None)
+            D = self.D
+        else:
+            D = total_state.sum(axis = 1)
+            self.D = D
+            
+        return rval * self.copies, D
+
+
+    def get_params(self):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        return [self.bias]
+
+    def sample(self, state_below = None, state_above = None,
+            layer_above = None,
+            theano_rng = None):
+        """
+        .. todo::
+
+            WRITEME
+        """
+
+
+        assert state_below is None
+        if self.copies != 1:
+            raise NotImplementedError()
+
+        msg = layer_above.downward_message(state_above)
+
+        bias = self.bias
+
+        z = msg + bias
+        
+        h_exp = T.nnet.softmax(z)
+        if self.D is None:
+            rval = theano_rng.multinomial( pvals = h_exp, dtype = h_exp.dtype)
+        else:
+            rval = theano_rng.multinomial(n = self.D, pvals = h_exp, dtype = h_exp.dtype)
+            rval.sum(axis = 1)
+
+        return rval
+
+    def mf_update(self, state_above, layer_above):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        msg = layer_above.downward_message(state_above)
+        mu = self.bias
+
+        z = msg + mu
+
+        rval = T.nnet.softmax(z)
+
+        return rval
+
+
+    def make_state(self, num_examples, numpy_rng):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        """ Returns a shared variable containing an actual state
+           (not a mean field state) for this variable.
+        """
+
+        if self.copies != 1:
+            raise NotImplementedError("need to make self.copies samples and average them together.")
+
+        t1 = time.time()
+
+        empty_input = self.output_space.get_origin_batch(num_examples)
+        h_state = sharedX(empty_input)
+
+        default_z = T.zeros_like(h_state) + self.b
+
+        theano_rng = make_theano_rng(None, numpy_rng.randint(2 ** 16),
+                                     which_method="binomial")
+
+        h_exp = T.nnet.softmax(default_z)
+
+        h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
+
+        h_state = sharedX( self.output_space.get_origin_batch(
+            num_examples))
+
+
+        t2 = time.time()
+
+        f = function([], updates = [(
+            h_state , h_sample
+            )])
+
+        t3 = time.time()
+
+        f()
+
+        t4 = time.time()
+
+        logger.info('{0}.make_state took {1}'.format(self, t4-t1))
+        logger.info('\tcompose time: {0}'.format(t2-t1))
+        logger.info('\tcompile time: {0}'.format(t3-t2))
+        logger.info('\texecute time: {0}'.format(t4-t3))
+
+        h_state.name = 'softmax_sample_shared'
+
+        return h_state
+
+    def make_symbolic_state(self, num_examples, theano_rng):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        """
+        Returns a symbolic variable containing an actual state
+        (not a mean field state) for this variable.
+        """
+
+        if self.copies != 1:
+            raise NotImplementedError("need to make self.copies samples and average them together.")
+
+        default_z = T.alloc(self.b, num_examples, self.n_classes)
+
+        h_exp = T.nnet.softmax(default_z)
+
+        h_sample = theano_rng.multinomial(pvals=h_exp, dtype=h_exp.dtype)
+
+        return h_sample
+
+    def expected_energy_term(self, state, average, state_below = None, average_below = None):
+        """
+        .. todo::
+
+            WRITEME
+        """
+
+        if self.center:
+            state = state - self.offset
+
+        assert state_below is None
+        assert average_below is None
+        assert average in [True, False]
+        self.space.validate(state)
+
+        rval = -T.dot(state, self.bias)
+
+        assert rval.ndim == 1
+
+        return rval * self.copies
+
+    def init_inpainting_state(self, Y, noise):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        if noise:
+            theano_rng = make_theano_rng(None, 2012+10+30, which_method="binomial")
+            return T.nnet.softmax(theano_rng.normal(avg=0., size=Y.shape, std=1., dtype='float32'))
+        rval =  T.nnet.softmax(self.b)
+        if not hasattr(self, 'learn_init_inpainting_state'):
+            self.learn_init_inpainting_state = 1
+        if not self.learn_init_inpainting_state:
+            rval = block_gradient(rval)
+        return rval
+
+    def recons_cost(self, V, V_hat_unmasked, drop_mask = None, use_sum=False):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        if use_sum:
+            raise NotImplementedError()
+
+        V_hat = V_hat_unmasked
+
+        assert hasattr(V_hat, 'owner')
+        owner = V_hat.owner
+        assert owner is not None
+        op = owner.op
+        block_grad = False
+        if is_block_gradient(op):
+            assert isinstance(op.scalar_op, theano.scalar.Identity)
+            block_grad = True
+            real, = owner.inputs
+            owner = real.owner
+            op = owner.op
+
+        if not hasattr(op, 'scalar_op'):
+            raise ValueError("Expected V_hat_unmasked to be generated by an Elemwise op, got "+str(op)+" of type "+str(type(op)))
+        assert isinstance(op.scalar_op, T.nnet.sigm.ScalarSigmoid)
+        z ,= owner.inputs
+        if block_grad:
+            z = block_gradient(z)
+
+        if V.ndim != V_hat.ndim:
+            raise ValueError("V and V_hat_unmasked should have same ndim, but are %d and %d." % (V.ndim, V_hat.ndim))
+        unmasked_cost = V * T.nnet.softplus(-z) + (1 - V) * T.nnet.softplus(z)
+        assert unmasked_cost.ndim == V_hat.ndim
+
+        if drop_mask is None:
+            masked_cost = unmasked_cost
+        else:
+            masked_cost = drop_mask * unmasked_cost
+
+        return masked_cost.mean()
+
