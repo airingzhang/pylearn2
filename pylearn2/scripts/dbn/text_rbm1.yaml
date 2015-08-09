@@ -1,6 +1,6 @@
 !obj:pylearn2.train.Train {
    
-    dataset: &train !obj:pylearn2.datasets.flickr_image_toronto.Flickr_Text_Toronto {
+    dataset: &train !obj:pylearn2.datasets.flickr_text_toronto.Flickr_Text_Toronto {
         which_cat: 'unlabelled',
         start: 0,
     },
@@ -8,7 +8,7 @@
         batch_size: %(batch_size)i,
         # 1 mean field iteration reaches convergence in the RBM
         niter: 1,
-        visible_layer: !obj:pylearn2.models.dbm.ReplicatedSoftMaxLayer {
+        visible_layer: !obj:pylearn2.models.dbm.layer.ReplicatedSoftMaxLayer {
             n_labels: 2000,
             # Here we can save sometime for training by setting init_mu and init_beta 
             # To do this one can first calculate the bias and STD beforehand 
@@ -48,6 +48,8 @@
                # We initialize the learning rate and momentum here. Down below
                # we can control the way they decay with various callbacks.
                learning_rate: 1e-3,
+               train_iteration_mode: 'even_sequential',
+               monitor_iteration_mode: 'even_sequential',
                # Compute new model parameters using SGD + Momentum
                learning_rule: !obj:pylearn2.training_algorithms.learning_rule.Momentum {
                    init_momentum: 0.5,
@@ -98,7 +100,7 @@
             !obj:pylearn2.training_algorithms.sgd.OneOverEpoch {
              start: 0,
              half_life: 200
-        	}
+            }
     ],
     save_path: "%(save_path)s/image_rbm1.pkl",
     # This says to save it every epoch

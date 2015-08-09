@@ -2,6 +2,7 @@
 The main DBM class
 """
 from pylearn2.blocks import theano
+from pylearn2.models.dbm.layer import ReplicatedSoftMaxLayer
 __authors__ = ["Ian Goodfellow", "Vincent Dumoulin"]
 __copyright__ = "Copyright 2012-2013, Universite de Montreal"
 __credits__ = ["Ian Goodfellow"]
@@ -129,10 +130,15 @@ class DBM(Model):
 
         # This condition could be relaxed, but current code assumes it
         assert len(self.hidden_layers) > 0
-
+        D = None
+        if type(self.visible_layer) is ReplicatedSoftMaxLayer:
+            state_below,D = self.visible_layer.upward_state(V)
+        else:
+            state_below=self.visible_layer.upward_state(V)
+            
         terms.append(self.hidden_layers[0].expected_energy_term(
-            state_below=self.visible_layer.upward_state(V),
-            state=hidden[0], average_below=False, average=False))
+            state_below=state_below,
+            state=hidden[0], average_below=False, average=False,D = D))
 
         for i in xrange(1, len(self.hidden_layers)):
             layer = self.hidden_layers[i]
@@ -180,7 +186,7 @@ class DBM(Model):
         -------
         rval : tensor_like
             Vector containing the expected energy of each example under the
-            corresponding variational distribution.
+            corresponding variational distribution.    
         """
 
         self.visible_layer.space.validate(V)
@@ -194,10 +200,15 @@ class DBM(Model):
 
         # This condition could be relaxed, but current code assumes it
         assert len(self.hidden_layers) > 0
-
+        
+        D = None
+        if type(self.visible_layer) is ReplicatedSoftMaxLayer:
+            state_below, D =self.visible_layer.upward_state(V)
+        else:
+            state_below =self.visible_layer.upward_state(V)
         terms.append(self.hidden_layers[0].expected_energy_term(
-            state_below=self.visible_layer.upward_state(V),
-            average_below=False, state=mf_hidden[0], average=True))
+            state_below=state_below,
+            average_below=False, state=mf_hidden[0], average=True, D = D))
 
         for i in xrange(1, len(self.hidden_layers)):
             layer = self.hidden_layers[i]
@@ -698,16 +709,225 @@ class DBM(Model):
         self.setup_inference_procedure()
         return self.inference_procedure.do_inpainting(*args, **kwargs)
     
-    def perform(self, X_raw):
+    def perform(self, X_raw, niter = None):
         """
-        added by Ning Zhang 
-        this method is used communicate with the Transformer.get_design_matrix()
+        Added by Ning Zhang 
+        This method is used communicate with the Transformer.get_design_matrix()
         Todo: save intermediate results to avoid repeating this step  
+        
+        Here X_raw is not the symbolic variable
         
         """
         inputs = T.matrix()
-        H_hat = self.inference_procedure.mf(inputs,niter=1)
-        r_val = H_hat[-1][0]
+        if niter is None:
+            niter = self.niter
+        H_hat = self.inference_procedure.mf(V = inputs, niter = niter)
+        r_val = self.hidden_layers[-1].upward_state(H_hat[-1])
+        
         fn = theano.function([inputs], r_val,name='perform')
         
         return fn(X_raw)
+    
+    def __call__(self, X_raw, return_history = False, niter = None):
+        """
+        Added by Ning Zhang 
+        This method is used communicate with the StackedBlock.
+        It functionality is quite similar to perform. 
+        Actually if one take a look at the code of TransformerDataset and StackedBlock
+        one can find the real content "perform" method is usually the "__call__" method
+        By implementing this method we easily stack multiple DBMs together.
+        
+        X_raw: symbolic variable 
+        return_history: return history of the all iterations
+        
+        """
+        if niter is None:
+            niter = self.niter
+        H_hat, history  = self.inference_procedure.mf(V = X_raw, niter = niter, return_history = return_history)
+        
+        if return_history:
+            output = []
+            for i in xrange(niter):
+                output.append(self.hidden_layers[-1].upward_state(history[i][-1]))
+            return output
+        else:
+            return self.hidden_layers[-1].upward_state(H_hat[-1])
+    
+    def upward_pass(self, v, niter = None, double_bottom = False):
+        
+        """
+        Added by Ning Zhang.
+        This method is provided for making DBM as a MLP or a part of MLP
+        One thing should be noticed is that: if two layer DBM a.k.a. RBM is stacked together,
+        by directly using this mf method of inference_procedure, we actually derived a DBN because inside the inference_procedure would
+        treat all the intermediate models as itegral ones instead of intermediate layers. 
+        
+        Therefore, we modify the DoubleWeighting for this situation.
+        
+        Todo: strictly speaking if DBMs are stacked and one want it do the exact Even-odd inference process
+        one should implement the downward_state and upward_state for DBM (not for its layers),
+        then the stacked DBMs can be function as a layer.
+        We leave it for the future.
+        """
+        if niter is None:
+            niter = self.niter
+                  
+        H_hat = self.inference_procedure.mf(V = v, niter = self.niter, double_bottom = double_bottom)[-1]
+        return self.hidden_layers[-1].upward_state(H_hat[-1])
+        
+    
+    def downward_pass(self, input_state, niter = None, return_history = False, real_visible = False, double_weight_swicth = True):
+    
+        """
+        Added by Ning Zhang
+        
+        This method is the reverse pass from top to bottom. One can take it as generalized version of reconstruction, 
+        while involving all the hidden layers.
+        
+        It would be used when a pre-trained RBM(DBM) being stacked together as a whole model by the newly defined pre_trained layer 
+        in layer.py
+        
+        It is the common case when we do the layer-wise training and fine-tuning.
+        
+        Here double weighting MF approach is adopted when deal with the top and bottom layer case by case
+        based on the value of "real_visible".
+        Models contains "real" visible layer may not the case. By "real" we mean the visible layer directly
+        the raw training datasets not the intermediate representations derived from trained hidden layers.
+        
+        real_visible: indicate if the visible layer in this model is the real one or the intermediate hidden one 
+        double_weight: with False, this method is switched to serve for DBN not DBM 
+         
+        Todo: debugging and testing
+        """
+        
+        self.get_output_space().validate(input_state)
+        if niter is None:
+            niter = self.niter
+            
+        if double_weight_swicth:
+            visible_input_factor = 1 if real_visible else 2   
+        else:
+            visible_input_factor  = 1
+                      
+        length = len(self.hidden_layers)
+        if length == 1:           
+            return self.visible_layer.mf_update(state_above = input_state * visible_input_factor,
+                                                layer_above = self.hidden_layers[0]
+                                                )
+            
+        else: 
+            #do MF inference once
+            history = []
+            H_hat = []
+            for j in xrange(2,length+1):
+                i = length - j
+                if i == length - 2:
+                    layer_below = self.hidden_layers[i-1]
+                    state_below = layer_below.upward_state()
+                    H_hat.append(self.hidden_layers[i].mf_update(state_above = input_state,
+                                                                    layer_above = self.hidden_layers[i + 1],
+                                                                    state_below = None,
+                                                                    double_weights = double_weight_swicth))  
+                else:
+                    H_hat.append(self.hidden_layers[i].mf_update(state_above = self.hidden_layers[i + 1].downward_state(H_hat[-1]),
+                                                                 layer_above = self.hidden_layers[i + 1],
+                                                                 state_below = None,
+                                                                 double_weights = double_weight_swicth)) 
+            # deal with visible layer
+            H_hat.append(self.visible_layer.mf_update(state_above = self.hidden_layers[0].downward_state(H_hat[-1]) * visible_input_factor,
+                                                      layer_above = self.hidden_layers[0]
+                                                      ))           
+            history.append(H_hat[-1])
+            
+            # DBN style MF
+            if not double_weight_swicth:
+                for it in xrange(1, niter):
+                    for j in xrange(2,length+1):
+                        i = length - j
+                        if i == length - 2:
+                            H_hat[length-2-i] = self.hidden_layers[i].mf_update(state_above = input_state,
+                                                                            layer_above = self.hidden_layers[i + 1],
+                                                                            double_weights = False)  
+                        else:
+                            H_hat.append(self.hidden_layers[i].mf_update(state_above = self.hidden_layers[i + 1].downward_state(H_hat[length-3-i]),
+                                                                         layer_above = self.hidden_layers[i + 1],
+                                                                         state_below = None,
+                                                                         double_weights = double_weight_swicth)) 
+                    # deal with visible layer
+                    H_hat[-1] = self.visible_layer.mf_update(state_above = self.hidden_layers[0].downward_state(H_hat[-2]),
+                                                              layer_above = self.hidden_layers[0]
+                                                              )
+                    history.append(H_hat[-1])    
+            else:              
+            # recurrent MF inference, even-odd style (DBM)
+                for it in xrange(1, niter):
+                    for j in xrange(2,length+1,2):
+                        i = length - j
+                        if i == length - 2:
+                            # If there are only two hidden layers, we should add visual layer for the MF inference
+                            if i == 0:
+                                layer_below = self.visible_layer
+                                state_below = layer_below.upward_state(H_hat[-1])
+                            else: 
+                                layer_below = self.hidden_layers[i-1]
+                                state_below = layer_below.upward_state(H_hat[length-1-i])
+                            H_hat[length-2-i] = self.hidden_layers[i].mf_update(state_above = input_state,
+                                                                          layer_above = self.hidden_layers[i + 1],
+                                                                          state_below = state_below,
+                                                                          double_weights = False)
+                        
+                        else:
+                            layer_above = self.hidden_layers[i + 1]
+                            state_above = layer_above.downward_state(H_hat[length-3-i])
+                            if i == 0:
+                                layer_below = self.visible_layer
+                                state_below = layer_below.upward_state(H_hat[-1])
+                            else: 
+                                layer_below = self.hidden_layers[i-1]
+                                state_below = layer_below.upward_state(H_hat[length-1-i])
+                            H_hat[length-2-i] = self.hidden_layers[i].mf_update(state_above = state_above,
+                                                                          layer_above = layer_above,
+                                                                          state_below = state_below,
+                                                                          layer_below = layer_below,
+                                                                          double_weights = False) 
+                    # deal with visible layer
+                    if length % 2 == 1:
+                        double_weights = 1 if real_visible else 2
+                        H_hat[-1] = self.visible_layer.mf_update(state_above = self.hidden_layers[0].downward_state(H_hat[-2]) * double_weights,
+                                                          layer_above = self.hidden_layers[0]
+                                                          )
+                        
+                    for j in xrange(3,length+1,2):
+                        i = length - j
+                        layer_above = self.hidden_layers[i + 1]
+                        state_above = layer_above.downward_state(H_hat[length-3-i])
+                        if i == 0:
+                            layer_below = self.visible_layer
+                            state_below = layer_below.upward_state(H_hat[-1])
+                        else: 
+                            layer_below = self.hidden_layers[i-1]
+                            state_below = layer_below.upward_state(H_hat[length-1-i])
+                        H_hat[length-2-i] = self.hidden_layers[i].mf_update(state_above = state_above,
+                                                                          layer_above = layer_above,
+                                                                          state_below = state_below,
+                                                                          layer_below = layer_below,
+                                                                          double_weights = False)
+                            
+                    if length % 2 == 0:
+                        double_weights = 1 if real_visible else 2
+                        H_hat[-1] = self.visible_layer.mf_update(state_above = self.hidden_layers[0].downward_state(H_hat[-2]) * double_weights,
+                                                          layer_above = self.hidden_layers[0]
+                                                          )      
+
+                    history.append(H_hat[-1])            
+
+        # Run some checks on the output
+        for i in xrange(0, length -1):
+            down_state = self.hidden_layers[i].downward_state(H_hat[length - 2- i])
+            self.hidden_layers[i].get_input_space().validate(down_state)
+        self.visibile_layer.get_input_space().validate(self.hidden_layers[0].downward_state(H_hat[-2]))
+        
+        if return_history:
+            return history
+        else:
+            return H_hat[-1]

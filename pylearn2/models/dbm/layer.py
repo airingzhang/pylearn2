@@ -1428,9 +1428,9 @@ class BinaryVectorMaxPool(HiddenLayer):
 
         return z, z
 
-    def mf_update(self, state_below, state_above, layer_above = None, double_weights = False, iter_name = None):
+    def mf_update(self, state_below, state_above, layer_above = None, double_weights = False, iter_name = None, D = None):
         """
-        .. todo::
+        Modified by Ning Zhang: adding D paramters for replicated softmax layer
 
             WRITEME
         """
@@ -1459,7 +1459,11 @@ class BinaryVectorMaxPool(HiddenLayer):
         if double_weights:
             state_below = 2. * state_below
             state_below.name = self.layer_name + '_'+iter_name + '_2state'
-        z = self.transformer.lmul(state_below) + self.b
+        if D is not None:
+            z = self.transformer.lmul(state_below) + self.b * D 
+        else:
+            z = self.transformer.lmul(state_below) + self.b
+        
         if self.layer_name is not None and iter_name is not None:
             z.name = self.layer_name + '_' + iter_name + '_z'
         p,h = max_pool_channels(z, self.pool_size, msg)
@@ -4209,7 +4213,7 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
             n_labels,
             bias_from_marginals = None,
             center = False,
-            copies = 1, learn_init_inpainting_state = False):
+            copies = 1, learn_init_inpainting_state = False, normalized_D = None):
 
         super(ReplicatedSoftMaxLayer, self).__init__()
         self.__dict__.update(locals())
@@ -4219,7 +4223,7 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
         self.space = VectorSpace(n_labels)
         self.input_space = self.space
-
+        self.out_space = VectorSpace(n_labels)
         origin = self.space.get_origin()
 
         if bias_from_marginals is None:
@@ -4231,7 +4235,10 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
         if center:
             self.offset = sharedX(sigmoid_numpy(init_bias))
-
+        
+        if normalized_D is not None:
+            self.D = normalized_D
+            
     def get_biases(self):
         """
         Returns
@@ -4267,6 +4274,9 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
         if not hasattr(self, 'copies'):
             self.copies = 1
+        
+        if hasattr(self, 'normalized_D'):
+            return rval * self.copies, self.normalized_D
             
         if D_is_initialized:
             assert(self.D is not None)
@@ -4346,21 +4356,15 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
         t1 = time.time()
 
-        empty_input = self.output_space.get_origin_batch(num_examples)
-        h_state = sharedX(empty_input)
-
-        default_z = T.zeros_like(h_state) + self.b
-
         theano_rng = make_theano_rng(None, numpy_rng.randint(2 ** 16),
                                      which_method="binomial")
 
-        h_exp = T.nnet.softmax(default_z)
-
-        h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
-
-        h_state = sharedX( self.output_space.get_origin_batch(
-            num_examples))
-
+        h_exp = T.nnet.softmax(self.bias)
+        if self.normalized_D is None:
+            h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
+        else:
+            h_sample = theano_rng.multinomial(n = self.normalized_D, pvals = h_exp, dtype = h_exp.dtype)
+        h_state = sharedX( np.zeros((num_examples, self.n_labels), dtype='float32'))
 
         t2 = time.time()
 
@@ -4401,7 +4405,10 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
         h_exp = T.nnet.softmax(default_z)
 
-        h_sample = theano_rng.multinomial(pvals=h_exp, dtype=h_exp.dtype)
+        if self.normalized_D is None:
+            h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
+        else:
+            h_sample = theano_rng.multinomial(n = self.normalized_D, pvals = h_exp, dtype = h_exp.dtype)
 
         return h_sample
 
@@ -4484,3 +4491,296 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
         return masked_cost.mean()
 
+class CompositeVisualLayer(VisibleLayer):
+    """
+        A Layer constructing by aligning several other Layer
+        objects side by side
+
+        Parameters
+        ----------
+        components : WRITEME
+            A list of layers that are combined to form this layer
+        components_to_output : None or dict mapping int to list of int
+            Should be None unless the input space is a CompositeSpace
+            If inputs_to_components[i] contains j, it means input i will
+            be given as input to component j.
+            If an input dodes not appear in the dictionary, it will be given
+            to all components.
+
+            This field allows one CompositeLayer to have another as input
+            without forcing each component to connect to all members
+            of the CompositeLayer below. For example, you might want to
+            have both densely connected and convolutional units in all
+            layers, but a convolutional unit is incapable of taking a
+            non-topological input space.
+    """
+
+
+    def __init__(self, layer_name, components, components_to_output = None):
+        self.layer_name = layer_name
+
+        self.components = list(components)
+        assert isinstance(components, list)
+        for component in components:
+            assert isinstance(component, VisibleLayer)
+        self.num_components = len(components)
+        self.components_to_output = components_to_output
+        self.input_space = CompositeSpace([component.input_space for component in self.components])
+        self.output_space = CompositeSpace([ component.get_output_space() for component in self.components ])
+        
+    def make_state(self, num_examples, numpy_rng):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        return tuple(component.make_state(num_examples, numpy_rng) for
+                component in self.components)
+
+    def get_total_state_space(self):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        return CompositeSpace([component.get_total_state_space() for component in self.components])
+
+    def set_batch_size(self, batch_size):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        for component in self.components:
+            component.set_batch_size(batch_size)
+
+    def set_dbm(self, dbm):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        for component in self.components:
+            component.set_dbm(dbm)
+
+    def mf_update(self, state_above, layer_above = None, double_weights = False, iter_name = None):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        rval = []
+
+        for i, component in enumerate(self.components):
+            class RoutingLayer(object):
+                def __init__(self, idx, layer):
+                    self.__dict__.update(locals())
+                    del self.self
+                    self.layer_name = 'route_'+str(idx)+'_'+layer.layer_name
+
+                def downward_message(self, state):
+                    return self.layer.downward_message(state)[self.idx]
+
+            if layer_above is not None:
+                cur_layer_above = RoutingLayer(i, layer_above)
+            else:
+                cur_layer_above = None
+
+            mf_update = component.mf_update(state_above = state_above,
+                                            layer_above = cur_layer_above,
+                                            double_weights = double_weights,
+                                            iter_name = iter_name)
+
+            rval.append(mf_update)
+
+        return tuple(rval)
+
+    def init_mf_state(self):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        return tuple([component.init_mf_state() for component in self.components])
+
+
+    def get_weight_decay(self, coeffs):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        return sum([component.get_weight_decay(coeff) for component, coeff
+            in safe_zip(self.components, coeffs)])
+
+    def upward_state(self, total_state):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        return tuple([component.upward_state(elem)
+            for component, elem in
+            safe_zip(self.components, total_state)])
+
+    
+    def get_l1_act_cost(self, state, target, coeff, eps):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        return sum([ comp.get_l1_act_cost(s, t, c, e) \
+            for comp, s, t, c, e in safe_zip(self.components, state, target, coeff, eps)])
+
+    def get_range_rewards(self, state, coeffs):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        return sum([comp.get_range_rewards(s, c)
+            for comp, s, c in safe_zip(self.components, state, coeffs)])
+
+    def get_params(self):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        return reduce(lambda x, y: safe_union(x, y),
+                [component.get_params() for component in self.components])
+
+    def get_weights_topo(self):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        logger.info('Get topological weights for which layer?')
+        for i, component in enumerate(self.components):
+            logger.info('{0} {1}'.format(i, component.layer_name))
+        x = input()
+        return self.components[int(x)].get_weights_topo()
+
+    def get_monitoring_channels_from_state(self, state):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        rval = OrderedDict()
+
+        for layer, s in safe_zip(self.components, state):
+            d = layer.get_monitoring_channels_from_state(s)
+            for key in d:
+                rval[layer.layer_name+'_'+key] = d[key]
+
+        return rval
+
+    def sample(self, state_below = None, state_above = None,
+            layer_above = None,
+            theano_rng = None):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        rval = []
+
+        for i, component in enumerate(self.components):           
+            class RoutingLayer(object):
+                def __init__(self, idx, layer):
+                    self.__dict__.update(locals())
+                    del self.self
+                    self.layer_name = 'route_'+str(idx)+'_'+layer.layer_name
+                """
+                Todo: Need to check the implementation of the above layer when the state is from a composite space.
+                Check its compatibilty with composite layer (visual and hidden)
+                
+                """
+                def downward_message(self, state):
+                    return self.layer.downward_message(state)[self.idx]
+
+            if layer_above is not None:
+                cur_layer_above = RoutingLayer(i, layer_above)
+            else:
+                cur_layer_above = None
+
+            sample = component.sample(state_above = state_above,
+                                      layer_above = cur_layer_above,
+                                      theano_rng = theano_rng)
+
+            rval.append(sample)
+
+        return tuple(rval)
+
+
+class PretrainedLayer(Layer):
+
+    """
+    
+    
+    A layer whose weights are initialized, and optionally fixed,
+    based on prior training.
+    This is to make a trained DBM compatible with MLP, mostly for finetuning purpos.
+    For now it is only for inference not training.
+    
+    Parameters
+    ----------
+    layer_content : Model
+        Should implement "upward_pass" (RBM and Autoencoder do this)
+    freeze_params: bool
+        If True, regard layer_conent's parameters as fixed
+        If False, they become parameters of this layer and can be
+        fine-tuned to optimize the MLP's cost function.
+    """
+
+    def __init__(self, layer_name, layer_content, freeze_params=False):
+        super(PretrainedLayer, self).__init__()
+        self.__dict__.update(locals())
+        del self.self
+        
+    def set_input_space(self, space):
+
+        assert self.get_input_space() == space
+
+    def get_params(self):
+
+        if self.freeze_params:
+            return []
+        """
+        Return a list for the compatability of loading a multiple layers case
+        Todo: test if errors occur when a list is return when only one hidden layer is added to the model
+        """
+        return [layer.get_params for layer in self.layer_content.hidden_layers]
+
+    def get_input_space(self):
+
+        return self.layer_content.get_input_space()
+
+    def get_output_space(self):
+
+        return self.layer_content.hidden_layers[-1].get_total_state_space()
+
+    def get_layer_monitoring_channels(self, state_below=None,
+                                      state=None, targets=None):
+        return OrderedDict([])
+
+    def upward_state(self, state_below):
+        
+        H_hat = self.layer_content.inference_procedure.mf(state_below, niter=1)
+
+        return H_hat[-1]
+    
+    def downward_state(self, total_state):
+        
+        H_hat = self.layer_content.down_pass(total_state, niter = 1, return_history = False, real_visible = False)
+
+        return H_hat
+    
+    def fprop(self, state_below):
+        
+        return self.layer_content.upward_pass(state_below)
+    
+    

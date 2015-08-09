@@ -1,0 +1,50 @@
+!obj:pylearn2.train.Train {
+    dataset: &train !obj:pylearn2.datasets.martix_wrapper {
+        X_dir: %(X_dir)s
+        y_dir: %(y_dir)s
+    },
+    model: !obj:pylearn2.models.mlp.MLP {
+        batch_size: %(batch_size)d,
+        layers: [
+        !obj:pylearn2.models.mlp.Sigmoid {
+            nclasses: 38,
+            binary_target_dim: 1
+        }
+        ],
+        nvis: %(nvis)d
+    },
+    algorithm: !obj:pylearn2.training_algorithms.sgd.SGD {
+        learning_rate: .05,
+        learning_rule: !obj:pylearn2.training_algorithms.learning_rule.Momentum {
+            init_momentum: .5,
+        },
+        cost: !obj:pylearn2.costs.mlp.Default {},
+        termination_criterion: !obj:pylearn2.termination_criteria.And {
+            criteria: [
+            !obj:pylearn2.termination_criteria.MonitorBased {
+                channel_name: "valid_y_misclass",
+                prop_decrease: 0.,
+                N: 100
+            },
+            !obj:pylearn2.termination_criteria.EpochCounter {
+                max_epochs: %(max_epochs)i
+            }
+            ]
+        },
+        update_callbacks: !obj:pylearn2.training_algorithms.sgd.ExponentialDecay {
+            decay_factor: 1.00004,
+            min_lr: .000001
+        }
+    },
+    extensions: [
+    !obj:pylearn2.training_algorithms.learning_rule.MomentumAdjustor {
+        start: 1,
+        saturate: 250,
+        final_momentum: .7
+    }
+    ],
+    
+    save_path: "%(save_path)s/joint_reps_classifier.pkl",
+    # This says to save it every epoch
+    save_freq : 1
+}

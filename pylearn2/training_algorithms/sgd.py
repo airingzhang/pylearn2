@@ -449,19 +449,34 @@ class SGD(TrainingAlgorithm):
                                     num_batches=self.batches_per_iter)
 
         on_load_batch = self.on_load_batch
-        for batch in iterator:
-            for callback in on_load_batch:
-                callback(*batch)
-            self.sgd_update(*batch)
-            # iterator might return a smaller batch if dataset size
-            # isn't divisible by batch_size
-            # Note: if data_specs[0] is a NullSpace, there is no way to know
-            # how many examples would actually have been in the batch,
-            # since it was empty, so actual_batch_size would be reported as 0.
-            actual_batch_size = flat_data_specs[0].np_batch_size(batch)
-            self.monitor.report_batch(actual_batch_size)
-            for callback in self.update_callbacks:
-                callback(self)
+        """
+        Modified by Ning Zhang: adding the compatibility for composite datasets, 
+        which may be the case for multimodal learning
+        
+        """
+        if type(iterator) is list:
+            for batch in zip(*iterator):
+                for callback in on_load_batch:
+                    callback(*batch)
+                self.sgd_update(*batch)
+                actual_batch_size = flat_data_specs[0].np_batch_size(batch)
+                self.monitor.report_batch(actual_batch_size)
+                for callback in self.update_callbacks:
+                    callback(self)
+        else:                 
+            for batch in iterator:
+                for callback in on_load_batch:
+                    callback(*batch)
+                self.sgd_update(*batch)
+                # iterator might return a smaller batch if dataset size
+                # isn't divisible by batch_size
+                # Note: if data_specs[0] is a NullSpace, there is no way to know
+                # how many examples would actually have been in the batch,
+                # since it was empty, so actual_batch_size would be reported as 0.
+                actual_batch_size = flat_data_specs[0].np_batch_size(batch)
+                self.monitor.report_batch(actual_batch_size)
+                for callback in self.update_callbacks:
+                    callback(self)
 
         # Make sure none of the parameters have bad values
         for param in self.params:

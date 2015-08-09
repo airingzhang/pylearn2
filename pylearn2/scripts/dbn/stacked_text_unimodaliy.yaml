@@ -1,0 +1,8 @@
+!obj: pylearn2.blocks.StackedBlocks{
+    layers: [
+    !pkl: "%(save_path)s/text_rbm1.pkl",
+    !pkl: "%(save_path)s/text_rbm2.pkl"
+    
+    ]
+    
+}

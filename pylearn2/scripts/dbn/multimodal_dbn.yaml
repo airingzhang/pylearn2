@@ -1,0 +1,51 @@
+!obj:pylearn2.blocks.StackedBlocks{
+    layers: [
+    
+        !obj: pylearn2.models.dbm.layer.CompositeVisualLayer{
+        
+            components: [
+        
+            !obj:pylearn2.models.dbm.layer.PretrainedLayer{
+                layer_name: "image_h1"
+                layer_content: !pkl: "%(save_path)s/image_rbm1.pkl"
+            },
+            
+            !obj:pylearn2.models.dbm.layer.PretrainedLayer{
+                layer_name: "text_h1"
+                layer_content: !pkl: "%(save_path)s/text_rbm1.pkl"
+            },
+        
+            ],
+            
+            components_to_output: &mapping {0:0, 1:1}
+            
+        },
+        
+        !obj: pylearn2.models.dbm.layer.CompositeHiddenLayer{
+            
+            input_componments: *mapping
+            components: [
+            
+            !obj:pylearn2.models.dbm.layer.PretrainedLayer{
+                layer_name: "image_h2"
+                layer_content: !pkl: "%(save_path)s/image_rbm2.pkl"
+            },
+            
+            !obj:pylearn2.models.dbm.layer.PretrainedLayer{
+                layer_name: "text_h2"
+                layer_content: !pkl: "%(save_path)s/text_rbm2.pkl"
+            },
+            
+            ],
+        }
+            
+        !obj: pylearn2.models.dbm.layer.PretrainedLayer{
+            layer_name: "joint_layer"
+            layer_content: !pkl: "%(save_path)s/joint_hidden_layer.pkl"
+            
+        }
+            
+        },
+    
+    ]
+}

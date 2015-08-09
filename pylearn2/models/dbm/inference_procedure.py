@@ -17,7 +17,7 @@ import theano
 from theano.gof.op import get_debug_values
 
 from pylearn2.models.dbm import block, flatten
-from pylearn2.models.dbm.layer import Softmax
+from pylearn2.models.dbm.layer import Softmax, ReplicatedSoftMaxLayer
 from pylearn2.utils import safe_izip, block_gradient, safe_zip
 
 
@@ -192,17 +192,23 @@ class WeightDoubling(InferenceProcedure):
     lack of top-down input on the first pass. This approach is
     described in "Deep Boltzmann Machines", Salakhutdinov and
     Hinton, 2008.
+    
+    Modified by Ning Zhang: to made it compatible with stacked case.
+    Becasue when multiple DBMs are stacked with each other,
+    we should also double weighted the top layer.   
     """
 
     @functools.wraps(InferenceProcedure.mf)
-    def mf(self, V, Y=None, return_history=False, niter=None, block_grad=None):
+    def mf(self, V, Y=None, return_history=False, niter=None, block_grad=None, double_top = False ):
 
         dbm = self.dbm
-
+    
         assert Y not in [True, False, 0, 1]
         assert return_history in [True, False, 0, 1]
-
+        
         if Y is not None:
+            # if Y exists, it means no matter what situation it is, the last hidden layer of this DBM should be on the top
+            double_top = False
             dbm.hidden_layers[-1].get_output_space().validate(Y)
 
         if niter is None:
@@ -212,11 +218,17 @@ class WeightDoubling(InferenceProcedure):
         for i in xrange(0, len(dbm.hidden_layers) - 1):
             # do double weights update for_layer_i
             if i == 0:
+                D = None
+                if type(dbm.visible_layer) is ReplicatedSoftMaxLayer:
+                    state_below, D = dbm.visible_layer.upward_state(V)
+                else:
+                    state_below = dbm.visible_layer.upward_state(V) 
                 H_hat.append(dbm.hidden_layers[i].mf_update(
                     state_above=None,
                     double_weights=True,
-                    state_below=dbm.visible_layer.upward_state(V),
-                    iter_name='0'))
+                    state_below=state_below,
+                    iter_name='0',
+                    D = D))
             else:
                 H_hat.append(dbm.hidden_layers[i].mf_update(
                     state_above=None,
@@ -229,11 +241,18 @@ class WeightDoubling(InferenceProcedure):
         if len(dbm.hidden_layers) > 1:
             H_hat.append(dbm.hidden_layers[-1].mf_update(
                 state_above=None,
-                state_below=dbm.hidden_layers[-2].upward_state(H_hat[-1])))
+                state_below=dbm.hidden_layers[-2].upward_state(H_hat[-1]),
+                double_weights = double_top))
         else:
+            D = None
+            if type(dbm.visible_layer) is ReplicatedSoftMaxLayer:
+                state_below, D = dbm.visible_layer.upward_state(V)
+            else:
+                state_below = dbm.visible_layer.upward_state(V)
+           
             H_hat.append(dbm.hidden_layers[-1].mf_update(
                 state_above=None,
-                state_below=dbm.visible_layer.upward_state(V)))
+                state_below = state_below, D = D, double_weight = double_top))
 
         # Make corrections for if we're also running inference on Y
         if Y is not None:
@@ -271,16 +290,17 @@ class WeightDoubling(InferenceProcedure):
                         state_below = dbm.hidden_layers[
                             j - 1].upward_state(H_hat[j - 1])
                     if j == len(H_hat) - 1:
-                        state_above = None
-                        layer_above = None
+                        H_hat[j] = dbm.hidden_layers[j].mf_update(
+                            state_below=state_below,
+                            double_weihts = double_top)
                     else:
                         state_above = dbm.hidden_layers[
                             j + 1].downward_state(H_hat[j + 1])
                         layer_above = dbm.hidden_layers[j + 1]
-                    H_hat[j] = dbm.hidden_layers[j].mf_update(
-                        state_below=state_below,
-                        state_above=state_above,
-                        layer_above=layer_above)
+                        H_hat[j] = dbm.hidden_layers[j].mf_update(
+                            state_below=state_below,
+                            state_above=state_above,
+                            layer_above=layer_above)
 
                 if Y is not None:
                     H_hat[-1] = Y
@@ -289,16 +309,17 @@ class WeightDoubling(InferenceProcedure):
                     state_below = dbm.hidden_layers[
                         j - 1].upward_state(H_hat[j - 1])
                     if j == len(H_hat) - 1:
-                        state_above = None
-                        state_above = None
+                        H_hat[j] = dbm.hidden_layers[j].mf_update(
+                            state_below=state_below,
+                            double_weihts = double_top)
                     else:
                         state_above = dbm.hidden_layers[
                             j + 1].downward_state(H_hat[j + 1])
                         layer_above = dbm.hidden_layers[j + 1]
-                    H_hat[j] = dbm.hidden_layers[j].mf_update(
-                        state_below=state_below,
-                        state_above=state_above,
-                        layer_above=layer_above)
+                        H_hat[j] = dbm.hidden_layers[j].mf_update(
+                            state_below=state_below,
+                            state_above=state_above,
+                            layer_above=layer_above)
                     # end ifelse
                 # end for odd layer
 
@@ -689,6 +710,7 @@ class WeightDoubling(InferenceProcedure):
                 return V_hat, Y_hat
             return V_hat
 
+   
 # Originally WeightDoubling did not support multi-prediction training,
 # while a separate class called SuperWeightDoubling did. Now they are
 # the same class, but we maintain the SuperWeightDoubling class for

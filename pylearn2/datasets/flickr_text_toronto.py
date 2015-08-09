@@ -74,10 +74,11 @@ class Flickr_Text_Toronto(SparseDataset):
         X = sp.csr_matrix((npzfile['data'], npzfile['indices'],
                                   npzfile['indptr']),
                                   shape=tuple(list(npzfile['shape'])))    
-        assert not numpy.any(numpy.isnan(self.X))
+        
         super(Flickr_Text_Toronto, self).__init__(
                 from_scipy_sparse_dataset = X
-        )    
+        )  
+        assert not numpy.any(numpy.isnan(self.X))  
         #=======================================================================
         # dealing with label if label is indicated to included by
         # which_set and which_sub
@@ -129,7 +130,7 @@ class Flickr_Text_Toronto(SparseDataset):
                     X_lil[j, :] = tmp
                 X = sp.csr_matrix(X_lil) 
             
-        assert not numpy.any(numpy.isnan(self.X))    
+        #assert not numpy.any(numpy.isnan(self.X))    
         if start is not None and stop is not None:
             assert start >= 0
             if stop > self.X.shape[0]:

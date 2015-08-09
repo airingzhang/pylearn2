@@ -1,0 +1,88 @@
+!obj:pylearn2.train.Train {
+    dataset: &train !obj:pylearn2.datasets.composite_dataset.CompositeDataset {
+        components: [
+            &train1 !obj:pylearn2.datasets.martix_wrapper{
+                 X_dir: %(X_dir_1)s,
+            
+            },
+            
+            &train2 !obj:pylearn2.datasets.martix_wrapper{
+                 X_dir: %(X_dir_2)s,
+                
+           },
+        
+        ],
+       
+    },
+    model: !obj:pylearn2.models.dbm.DBM {
+        batch_size: %(batch_size)d,
+        niter: 1,
+        visible_layer: !obj:pylearn2.models.dbm.CompositVisualLayer {
+             components: [
+                !obj:pylearn2.models.dbm.layer.BinaryVector{
+                    nvis: %(nvis_1)i,
+                    bias_from_marginals: *train1
+                },
+                
+                !obj:pylearn2.models.dbm.layer.BinaryVector{
+                    nvis: %(nvis_2)i,
+                    bias_from_marginals: *train2
+                },
+            
+            ]
+            
+            compoent_to_out: {0:0, 1:1}
+        },
+        
+        hidden_layers: [
+        !obj:pylearn2.models.dbm.BinaryVectorMaxPool {
+            layer_name: 'joint_hidden_layer',
+            detector_layer_dim: %(nhid)i,
+            pool_size: 1,
+            irange: .05,
+            init_bias: -2.,
+        }
+        ]
+    },
+    algorithm: !obj:pylearn2.training_algorithms.sgd.SGD {
+        learning_rate: 1e-3,
+        learning_rule: !obj:pylearn2.training_algorithms.learning_rule.Momentum {
+            init_momentum: 0.5,
+        },
+        monitoring_batches: %(monitoring_batches)i,
+        monitoring_dataset : *train1,
+        cost : !obj:pylearn2.costs.cost.SumOfCosts {
+            costs: [
+            !obj:pylearn2.costs.dbm.VariationalPCD {
+                num_chains: %(num_chains)i,
+                num_gibbs_steps: %(num_gibbs_steps)i,
+            },
+            !obj:pylearn2.costs.dbm.WeightDecay {
+                coeffs: [ .0001  ]
+            },
+            !obj:pylearn2.costs.dbm.TorontoSparsity {
+                targets: [ .1 ],
+                coeffs: [ .001 ],
+            }
+            ],
+        },
+        # We tell the RBM to train for 300 epochs
+        termination_criterion: !obj:pylearn2.termination_criteria.EpochCounter { max_epochs: %(max_epochs)i },
+    },
+    extensions: [
+    # This callback makes the momentum grow to 0.9 linearly. It starts
+    # growing at epoch 5 and finishes growing at epoch 6.
+    !obj:pylearn2.training_algorithms.learning_rule.MomentumAdjustor {
+        final_momentum: .9,
+        start: 1,
+        saturate: 10000
+    },
+    !obj:pylearn2.training_algorithms.sgd.OneOverEpoch {
+        start: 0,
+        half_life: 10000
+    }
+    ],
+    save_path: "%(save_path)s/joint_hidden_layer.pkl",
+    # This says to save it every epoch
+    save_freq : 1
+}
