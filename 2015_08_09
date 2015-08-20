@@ -1,0 +1,1248 @@
+diff --git a/pylearn2/datasets/composite_dataset.py b/pylearn2/datasets/composite_dataset.py
+new file mode 100644
+index 0000000..6c8b442
+--- /dev/null
++++ b/pylearn2/datasets/composite_dataset.py
+@@ -0,0 +1,39 @@
++'''
++Created on Aug 3, 2015
++
++@author: ningzhang
++'''
++from pylearn2.sandbox.cuda_convnet.base_acts import UnimplementedError
++from pylearn2.space import CompositeSpace
++from pylearn2.datasets.dataset import Dataset
++
++
++class CompositeDataset(Dataset):
++    """
++    This is a wrapper to combine multiple datasets into one for multimodal learning
++    """
++    def __init__(self, components):
++        if components is None or len(components) < 1:
++            raise UnimplementedError("You should used simple dataset instead of CompositeDataset")
++        self.components = components
++        self.space = CompositeSpace([component.specs(0) for component in components])
++        self.source = tuple([component.specs(1) for component in components])
++        self.specs = (self.space, self.source)
++        batch_sizes = [component.batch_size for component in components]
++        if any(batch_size != batch_sizes[0] for batch_size in batch_sizes) :
++            raise UnimplementedError("CompositeDataset requires a unified bacthsize along all its components")
++        self.batch_size = batch_sizes[0] 
++        
++        data_sizes = [component.get_num_examples() for component in components]
++        if any(batch_size != batch_sizes[0] for batch_size in batch_sizes) :
++            raise UnimplementedError("CompositeDataset requires a unified data size along all its components")
++        self.data_size = data_sizes[0] 
++    
++    def get_num_examples(self):
++        return self.data_size
++    
++    def iterator(self):
++        return [component.iterator() for component in self.components]
++    
++        
++        
+\ No newline at end of file
+diff --git a/pylearn2/datasets/flickr_text_toronto.py b/pylearn2/datasets/flickr_text_toronto.py
+index 6dc21ec..9ce1bbc 100644
+--- a/pylearn2/datasets/flickr_text_toronto.py
++++ b/pylearn2/datasets/flickr_text_toronto.py
+@@ -74,10 +74,11 @@
+         X = sp.csr_matrix((npzfile['data'], npzfile['indices'],
+                                   npzfile['indptr']),
+                                   shape=tuple(list(npzfile['shape'])))    
+-        assert not numpy.any(numpy.isnan(self.X))
++        
+         super(Flickr_Text_Toronto, self).__init__(
+                 from_scipy_sparse_dataset = X
+-        )    
++        )  
++        assert not numpy.any(numpy.isnan(self.X))  
+         #=======================================================================
+         # dealing with label if label is indicated to included by
+         # which_set and which_sub
+@@ -129,7 +130,7 @@
+                     X_lil[j, :] = tmp
+                 X = sp.csr_matrix(X_lil) 
+             
+-        assert not numpy.any(numpy.isnan(self.X))    
++        #assert not numpy.any(numpy.isnan(self.X))    
+         if start is not None and stop is not None:
+             assert start >= 0
+             if stop > self.X.shape[0]:
+diff --git a/pylearn2/datasets/matrix_wrapper.py b/pylearn2/datasets/matrix_wrapper.py
+new file mode 100644
+index 0000000..ab3abd9
+--- /dev/null
++++ b/pylearn2/datasets/matrix_wrapper.py
+@@ -0,0 +1,84 @@
++'''
++Created on Aug 3, 2015
++
++@author: ningzhang
++'''
++
++import glob
++import numpy
++import pylearn2.utils.serial as serial
++from pylearn2.datasets.dense_design_matrix import DenseDesignMatrix
++from pylearn2.datasets import control, cache
++from pylearn2.datasets.exc import NotInstalledError
++
++class DenseDesignMartixWrapper(DenseDesignMatrix):
++    '''
++    This is a simple wrapper for DenseDesignMatrix which can read data from files.
++    Dir: directory of files 
++    
++    '''
++    _default_seed = (17, 2, 946)
++    
++    def __init__(self, X_dir, topo_view=None, y_dir=None,
++                 view_converter=None, axes=('b', 0, 1, 'c'),
++                 rng=_default_seed, preprocessor=None, fit_preprocessor=False,
++                 X_labels=None, y_labels=None):
++        '''
++        Constructor
++        '''
++        if X_dir is None:
++            raise ValueError("X_dir should not be None when using DenseDesignMartixWrapper")
++        
++        im_path = serial.preprocess(X_dir)
++        files = glob.glob(im_path + '*.npy')  
++        datasetCache = cache.datasetCache
++        # Locally cache the files before reading them
++        initialized = False
++        m_total = 0
++        for f in files:
++            im_path = datasetCache.cache_file(f)
++            try:
++                temp = serial.load(im_path)
++            except IOError:
++                raise NotInstalledError("Flickr_imgae_Toronto image files cannot be "
++                                                    "found in " + im_path + ". Please check the directory")
++            m, d = temp.shape
++            assert d == 3857
++            m_total += m 
++            if not initialized :
++                X = temp
++                initialized = True
++            else:
++                numpy.concatenate((X, temp), axis=0)
++        if y_dir is not None:
++            im_path = serial.preprocess(y_dir)
++            files = glob.glob(im_path + '*.npy')  
++            datasetCache = cache.datasetCache
++            # Locally cache the files before reading them
++            initialized = False
++            m_total = 0
++            for f in files:
++                im_path = datasetCache.cache_file(f)
++                try:
++                    temp = serial.load(im_path)
++                except IOError:
++                    raise NotInstalledError("Flickr_imgae_Toronto image files cannot be "
++                                                        "found in " + im_path + ". Please check the directory")
++                m, d = temp.shape
++                assert d == 3857
++                m_total += m 
++                if not initialized :
++                    y = temp
++                    initialized = True
++                else:
++                    numpy.concatenate((y, temp), axis=0)        
++        else:
++            y = None
++            
++        super(DenseDesignMartixWrapper, self).__init__(
++                X=X, y = y, topo_view=topo_view,
++                view_converter=view_converter, axes=('b', 0, 1, 'c'),
++                rng=rng, preprocessor=preprocessor, fit_preprocessor=fit_preprocessor,
++                X_labels=X_labels, y_labels=y_labels
++            )
++        
+diff --git a/pylearn2/models/dbm/dbm.py b/pylearn2/models/dbm/dbm.py
+index 52829e1..3defd92 100755
+--- a/pylearn2/models/dbm/dbm.py
++++ b/pylearn2/models/dbm/dbm.py
+@@ -2,6 +2,7 @@
+ The main DBM class
+ """
+ from pylearn2.blocks import theano
++from pylearn2.models.dbm.layer import ReplicatedSoftMaxLayer
+ __authors__ = ["Ian Goodfellow", "Vincent Dumoulin"]
+ __copyright__ = "Copyright 2012-2013, Universite de Montreal"
+ __credits__ = ["Ian Goodfellow"]
+@@ -129,10 +130,15 @@
+ 
+         # This condition could be relaxed, but current code assumes it
+         assert len(self.hidden_layers) > 0
+-
++        D = None
++        if type(self.visible_layer) is ReplicatedSoftMaxLayer:
++            state_below,D = self.visible_layer.upward_state(V)
++        else:
++            state_below=self.visible_layer.upward_state(V)
++            
+         terms.append(self.hidden_layers[0].expected_energy_term(
+-            state_below=self.visible_layer.upward_state(V),
+-            state=hidden[0], average_below=False, average=False))
++            state_below=state_below,
++            state=hidden[0], average_below=False, average=False,D = D))
+ 
+         for i in xrange(1, len(self.hidden_layers)):
+             layer = self.hidden_layers[i]
+@@ -180,7 +186,7 @@
+         -------
+         rval : tensor_like
+             Vector containing the expected energy of each example under the
+-            corresponding variational distribution.
++            corresponding variational distribution.    
+         """
+ 
+         self.visible_layer.space.validate(V)
+@@ -194,10 +200,15 @@
+ 
+         # This condition could be relaxed, but current code assumes it
+         assert len(self.hidden_layers) > 0
+-
++        
++        D = None
++        if type(self.visible_layer) is ReplicatedSoftMaxLayer:
++            state_below, D =self.visible_layer.upward_state(V)
++        else:
++            state_below =self.visible_layer.upward_state(V)
+         terms.append(self.hidden_layers[0].expected_energy_term(
+-            state_below=self.visible_layer.upward_state(V),
+-            average_below=False, state=mf_hidden[0], average=True))
++            state_below=state_below,
++            average_below=False, state=mf_hidden[0], average=True, D = D))
+ 
+         for i in xrange(1, len(self.hidden_layers)):
+             layer = self.hidden_layers[i]
+@@ -698,16 +709,225 @@
+         self.setup_inference_procedure()
+         return self.inference_procedure.do_inpainting(*args, **kwargs)
+     
+-    def perform(self, X_raw):
++    def perform(self, X_raw, niter = None):
+         """
+-        added by Ning Zhang 
+-        this method is used communicate with the Transformer.get_design_matrix()
++        Added by Ning Zhang 
++        This method is used communicate with the Transformer.get_design_matrix()
+         Todo: save intermediate results to avoid repeating this step  
++        
++        Here X_raw is not the symbolic variable
+         
+         """
+         inputs = T.matrix()
+-        H_hat = self.inference_procedure.mf(inputs,niter=1)
+-        r_val = H_hat[-1][0]
++        if niter is None:
++            niter = self.niter
++        H_hat = self.inference_procedure.mf(V = inputs, niter = niter)
++        r_val = self.hidden_layers[-1].upward_state(H_hat[-1])
++        
+         fn = theano.function([inputs], r_val,name='perform')
+         
+-        return fn(X_raw)
+\ No newline at end of file
++        return fn(X_raw)
++    
++    def __call__(self, X_raw, return_history = False, niter = None):
++        """
++        Added by Ning Zhang 
++        This method is used communicate with the StackedBlock.
++        It functionality is quite similar to perform. 
++        Actually if one take a look at the code of TransformerDataset and StackedBlock
++        one can find the real content "perform" method is usually the "__call__" method
++        By implementing this method we easily stack multiple DBMs together.
++        
++        X_raw: symbolic variable 
++        return_history: return history of the all iterations
++        
++        """
++        if niter is None:
++            niter = self.niter
++        H_hat, history  = self.inference_procedure.mf(V = X_raw, niter = niter, return_history = return_history)
++        
++        if return_history:
++            output = []
++            for i in xrange(niter):
++                output.append(self.hidden_layers[-1].upward_state(history[i][-1]))
++            return output
++        else:
++            return self.hidden_layers[-1].upward_state(H_hat[-1])
++    
++    def upward_pass(self, v, niter = None, double_bottom = False):
++        
++        """
++        Added by Ning Zhang.
++        This method is provided for making DBM as a MLP or a part of MLP
++        One thing should be noticed is that: if two layer DBM a.k.a. RBM is stacked together,
++        by directly using this mf method of inference_procedure, we actually derived a DBN because inside the inference_procedure would
++        treat all the intermediate models as itegral ones instead of intermediate layers. 
++        
++        Therefore, we modify the DoubleWeighting for this situation.
++        
++        Todo: strictly speaking if DBMs are stacked and one want it do the exact Even-odd inference process
++        one should implement the downward_state and upward_state for DBM (not for its layers),
++        then the stacked DBMs can be function as a layer.
++        We leave it for the future.
++        """
++        if niter is None:
++            niter = self.niter
++                  
++        H_hat = self.inference_procedure.mf(V = v, niter = self.niter, double_bottom = double_bottom)[-1]
++        return self.hidden_layers[-1].upward_state(H_hat[-1])
++        
++    
++    def downward_pass(self, input_state, niter = None, return_history = False, real_visible = False, double_weight_swicth = True):
++    
++        """
++        Added by Ning Zhang
++        
++        This method is the reverse pass from top to bottom. One can take it as generalized version of reconstruction, 
++        while involving all the hidden layers.
++        
++        It would be used when a pre-trained RBM(DBM) being stacked together as a whole model by the newly defined pre_trained layer 
++        in layer.py
++        
++        It is the common case when we do the layer-wise training and fine-tuning.
++        
++        Here double weighting MF approach is adopted when deal with the top and bottom layer case by case
++        based on the value of "real_visible".
++        Models contains "real" visible layer may not the case. By "real" we mean the visible layer directly
++        the raw training datasets not the intermediate representations derived from trained hidden layers.
++        
++        real_visible: indicate if the visible layer in this model is the real one or the intermediate hidden one 
++        double_weight: with False, this method is switched to serve for DBN not DBM 
++         
++        Todo: debugging and testing
++        """
++        
++        self.get_output_space().validate(input_state)
++        if niter is None:
++            niter = self.niter
++            
++        if double_weight_swicth:
++            visible_input_factor = 1 if real_visible else 2   
++        else:
++            visible_input_factor  = 1
++                      
++        length = len(self.hidden_layers)
++        if length == 1:           
++            return self.visible_layer.mf_update(state_above = input_state * visible_input_factor,
++                                                layer_above = self.hidden_layers[0]
++                                                )
++            
++        else: 
++            #do MF inference once
++            history = []
++            H_hat = []
++            for j in xrange(2,length+1):
++                i = length - j
++                if i == length - 2:
++                    layer_below = self.hidden_layers[i-1]
++                    state_below = layer_below.upward_state()
++                    H_hat.append(self.hidden_layers[i].mf_update(state_above = input_state,
++                                                                    layer_above = self.hidden_layers[i + 1],
++                                                                    state_below = None,
++                                                                    double_weights = double_weight_swicth))  
++                else:
++                    H_hat.append(self.hidden_layers[i].mf_update(state_above = self.hidden_layers[i + 1].downward_state(H_hat[-1]),
++                                                                 layer_above = self.hidden_layers[i + 1],
++                                                                 state_below = None,
++                                                                 double_weights = double_weight_swicth)) 
++            # deal with visible layer
++            H_hat.append(self.visible_layer.mf_update(state_above = self.hidden_layers[0].downward_state(H_hat[-1]) * visible_input_factor,
++                                                      layer_above = self.hidden_layers[0]
++                                                      ))           
++            history.append(H_hat[-1])
++            
++            # DBN style MF
++            if not double_weight_swicth:
++                for it in xrange(1, niter):
++                    for j in xrange(2,length+1):
++                        i = length - j
++                        if i == length - 2:
++                            H_hat[length-2-i] = self.hidden_layers[i].mf_update(state_above = input_state,
++                                                                            layer_above = self.hidden_layers[i + 1],
++                                                                            double_weights = False)  
++                        else:
++                            H_hat.append(self.hidden_layers[i].mf_update(state_above = self.hidden_layers[i + 1].downward_state(H_hat[length-3-i]),
++                                                                         layer_above = self.hidden_layers[i + 1],
++                                                                         state_below = None,
++                                                                         double_weights = double_weight_swicth)) 
++                    # deal with visible layer
++                    H_hat[-1] = self.visible_layer.mf_update(state_above = self.hidden_layers[0].downward_state(H_hat[-2]),
++                                                              layer_above = self.hidden_layers[0]
++                                                              )
++                    history.append(H_hat[-1])    
++            else:              
++            # recurrent MF inference, even-odd style (DBM)
++                for it in xrange(1, niter):
++                    for j in xrange(2,length+1,2):
++                        i = length - j
++                        if i == length - 2:
++                            # If there are only two hidden layers, we should add visual layer for the MF inference
++                            if i == 0:
++                                layer_below = self.visible_layer
++                                state_below = layer_below.upward_state(H_hat[-1])
++                            else: 
++                                layer_below = self.hidden_layers[i-1]
++                                state_below = layer_below.upward_state(H_hat[length-1-i])
++                            H_hat[length-2-i] = self.hidden_layers[i].mf_update(state_above = input_state,
++                                                                          layer_above = self.hidden_layers[i + 1],
++                                                                          state_below = state_below,
++                                                                          double_weights = False)
++                        
++                        else:
++                            layer_above = self.hidden_layers[i + 1]
++                            state_above = layer_above.downward_state(H_hat[length-3-i])
++                            if i == 0:
++                                layer_below = self.visible_layer
++                                state_below = layer_below.upward_state(H_hat[-1])
++                            else: 
++                                layer_below = self.hidden_layers[i-1]
++                                state_below = layer_below.upward_state(H_hat[length-1-i])
++                            H_hat[length-2-i] = self.hidden_layers[i].mf_update(state_above = state_above,
++                                                                          layer_above = layer_above,
++                                                                          state_below = state_below,
++                                                                          layer_below = layer_below,
++                                                                          double_weights = False) 
++                    # deal with visible layer
++                    if length % 2 == 1:
++                        double_weights = 1 if real_visible else 2
++                        H_hat[-1] = self.visible_layer.mf_update(state_above = self.hidden_layers[0].downward_state(H_hat[-2]) * double_weights,
++                                                          layer_above = self.hidden_layers[0]
++                                                          )
++                        
++                    for j in xrange(3,length+1,2):
++                        i = length - j
++                        layer_above = self.hidden_layers[i + 1]
++                        state_above = layer_above.downward_state(H_hat[length-3-i])
++                        if i == 0:
++                            layer_below = self.visible_layer
++                            state_below = layer_below.upward_state(H_hat[-1])
++                        else: 
++                            layer_below = self.hidden_layers[i-1]
++                            state_below = layer_below.upward_state(H_hat[length-1-i])
++                        H_hat[length-2-i] = self.hidden_layers[i].mf_update(state_above = state_above,
++                                                                          layer_above = layer_above,
++                                                                          state_below = state_below,
++                                                                          layer_below = layer_below,
++                                                                          double_weights = False)
++                            
++                    if length % 2 == 0:
++                        double_weights = 1 if real_visible else 2
++                        H_hat[-1] = self.visible_layer.mf_update(state_above = self.hidden_layers[0].downward_state(H_hat[-2]) * double_weights,
++                                                          layer_above = self.hidden_layers[0]
++                                                          )      
++
++                    history.append(H_hat[-1])            
++
++        # Run some checks on the output
++        for i in xrange(0, length -1):
++            down_state = self.hidden_layers[i].downward_state(H_hat[length - 2- i])
++            self.hidden_layers[i].get_input_space().validate(down_state)
++        self.visibile_layer.get_input_space().validate(self.hidden_layers[0].downward_state(H_hat[-2]))
++        
++        if return_history:
++            return history
++        else:
++            return H_hat[-1]
+\ No newline at end of file
+diff --git a/pylearn2/models/dbm/inference_procedure.py b/pylearn2/models/dbm/inference_procedure.py
+index 4ee344a..d4dec25 100644
+--- a/pylearn2/models/dbm/inference_procedure.py
++++ b/pylearn2/models/dbm/inference_procedure.py
+@@ -17,7 +17,7 @@
+ from theano.gof.op import get_debug_values
+ 
+ from pylearn2.models.dbm import block, flatten
+-from pylearn2.models.dbm.layer import Softmax
++from pylearn2.models.dbm.layer import Softmax, ReplicatedSoftMaxLayer
+ from pylearn2.utils import safe_izip, block_gradient, safe_zip
+ 
+ 
+@@ -192,17 +192,23 @@
+     lack of top-down input on the first pass. This approach is
+     described in "Deep Boltzmann Machines", Salakhutdinov and
+     Hinton, 2008.
++    
++    Modified by Ning Zhang: to made it compatible with stacked case.
++    Becasue when multiple DBMs are stacked with each other,
++    we should also double weighted the top layer.   
+     """
+ 
+     @functools.wraps(InferenceProcedure.mf)
+-    def mf(self, V, Y=None, return_history=False, niter=None, block_grad=None):
++    def mf(self, V, Y=None, return_history=False, niter=None, block_grad=None, double_top = False ):
+ 
+         dbm = self.dbm
+-
++    
+         assert Y not in [True, False, 0, 1]
+         assert return_history in [True, False, 0, 1]
+-
++        
+         if Y is not None:
++            # if Y exists, it means no matter what situation it is, the last hidden layer of this DBM should be on the top
++            double_top = False
+             dbm.hidden_layers[-1].get_output_space().validate(Y)
+ 
+         if niter is None:
+@@ -212,11 +218,17 @@
+         for i in xrange(0, len(dbm.hidden_layers) - 1):
+             # do double weights update for_layer_i
+             if i == 0:
++                D = None
++                if type(dbm.visible_layer) is ReplicatedSoftMaxLayer:
++                    state_below, D = dbm.visible_layer.upward_state(V)
++                else:
++                    state_below = dbm.visible_layer.upward_state(V) 
+                 H_hat.append(dbm.hidden_layers[i].mf_update(
+                     state_above=None,
+                     double_weights=True,
+-                    state_below=dbm.visible_layer.upward_state(V),
+-                    iter_name='0'))
++                    state_below=state_below,
++                    iter_name='0',
++                    D = D))
+             else:
+                 H_hat.append(dbm.hidden_layers[i].mf_update(
+                     state_above=None,
+@@ -229,11 +241,18 @@
+         if len(dbm.hidden_layers) > 1:
+             H_hat.append(dbm.hidden_layers[-1].mf_update(
+                 state_above=None,
+-                state_below=dbm.hidden_layers[-2].upward_state(H_hat[-1])))
++                state_below=dbm.hidden_layers[-2].upward_state(H_hat[-1]),
++                double_weights = double_top))
+         else:
++            D = None
++            if type(dbm.visible_layer) is ReplicatedSoftMaxLayer:
++                state_below, D = dbm.visible_layer.upward_state(V)
++            else:
++                state_below = dbm.visible_layer.upward_state(V)
++           
+             H_hat.append(dbm.hidden_layers[-1].mf_update(
+                 state_above=None,
+-                state_below=dbm.visible_layer.upward_state(V)))
++                state_below = state_below, D = D, double_weight = double_top))
+ 
+         # Make corrections for if we're also running inference on Y
+         if Y is not None:
+@@ -271,16 +290,17 @@
+                         state_below = dbm.hidden_layers[
+                             j - 1].upward_state(H_hat[j - 1])
+                     if j == len(H_hat) - 1:
+-                        state_above = None
+-                        layer_above = None
++                        H_hat[j] = dbm.hidden_layers[j].mf_update(
++                            state_below=state_below,
++                            double_weihts = double_top)
+                     else:
+                         state_above = dbm.hidden_layers[
+                             j + 1].downward_state(H_hat[j + 1])
+                         layer_above = dbm.hidden_layers[j + 1]
+-                    H_hat[j] = dbm.hidden_layers[j].mf_update(
+-                        state_below=state_below,
+-                        state_above=state_above,
+-                        layer_above=layer_above)
++                        H_hat[j] = dbm.hidden_layers[j].mf_update(
++                            state_below=state_below,
++                            state_above=state_above,
++                            layer_above=layer_above)
+ 
+                 if Y is not None:
+                     H_hat[-1] = Y
+@@ -289,16 +309,17 @@
+                     state_below = dbm.hidden_layers[
+                         j - 1].upward_state(H_hat[j - 1])
+                     if j == len(H_hat) - 1:
+-                        state_above = None
+-                        state_above = None
++                        H_hat[j] = dbm.hidden_layers[j].mf_update(
++                            state_below=state_below,
++                            double_weihts = double_top)
+                     else:
+                         state_above = dbm.hidden_layers[
+                             j + 1].downward_state(H_hat[j + 1])
+                         layer_above = dbm.hidden_layers[j + 1]
+-                    H_hat[j] = dbm.hidden_layers[j].mf_update(
+-                        state_below=state_below,
+-                        state_above=state_above,
+-                        layer_above=layer_above)
++                        H_hat[j] = dbm.hidden_layers[j].mf_update(
++                            state_below=state_below,
++                            state_above=state_above,
++                            layer_above=layer_above)
+                     # end ifelse
+                 # end for odd layer
+ 
+@@ -689,6 +710,7 @@
+                 return V_hat, Y_hat
+             return V_hat
+ 
++   
+ # Originally WeightDoubling did not support multi-prediction training,
+ # while a separate class called SuperWeightDoubling did. Now they are
+ # the same class, but we maintain the SuperWeightDoubling class for
+diff --git a/pylearn2/models/dbm/layer.py b/pylearn2/models/dbm/layer.py
+index 3aa11b2..6d3292d 100644
+--- a/pylearn2/models/dbm/layer.py
++++ b/pylearn2/models/dbm/layer.py
+@@ -1428,9 +1428,9 @@
+ 
+         return z, z
+ 
+-    def mf_update(self, state_below, state_above, layer_above = None, double_weights = False, iter_name = None):
++    def mf_update(self, state_below, state_above, layer_above = None, double_weights = False, iter_name = None, D = None):
+         """
+-        .. todo::
++        Modified by Ning Zhang: adding D paramters for replicated softmax layer
+ 
+             WRITEME
+         """
+@@ -1459,7 +1459,11 @@
+         if double_weights:
+             state_below = 2. * state_below
+             state_below.name = self.layer_name + '_'+iter_name + '_2state'
+-        z = self.transformer.lmul(state_below) + self.b
++        if D is not None:
++            z = self.transformer.lmul(state_below) + self.b * D 
++        else:
++            z = self.transformer.lmul(state_below) + self.b
++        
+         if self.layer_name is not None and iter_name is not None:
+             z.name = self.layer_name + '_' + iter_name + '_z'
+         p,h = max_pool_channels(z, self.pool_size, msg)
+@@ -4209,7 +4213,7 @@
+             n_labels,
+             bias_from_marginals = None,
+             center = False,
+-            copies = 1, learn_init_inpainting_state = False):
++            copies = 1, learn_init_inpainting_state = False, normalized_D = None):
+ 
+         super(ReplicatedSoftMaxLayer, self).__init__()
+         self.__dict__.update(locals())
+@@ -4219,7 +4223,7 @@
+ 
+         self.space = VectorSpace(n_labels)
+         self.input_space = self.space
+-
++        self.out_space = VectorSpace(n_labels)
+         origin = self.space.get_origin()
+ 
+         if bias_from_marginals is None:
+@@ -4231,7 +4235,10 @@
+ 
+         if center:
+             self.offset = sharedX(sigmoid_numpy(init_bias))
+-
++        
++        if normalized_D is not None:
++            self.D = normalized_D
++            
+     def get_biases(self):
+         """
+         Returns
+@@ -4267,6 +4274,9 @@
+ 
+         if not hasattr(self, 'copies'):
+             self.copies = 1
++        
++        if hasattr(self, 'normalized_D'):
++            return rval * self.copies, self.normalized_D
+             
+         if D_is_initialized:
+             assert(self.D is not None)
+@@ -4346,21 +4356,15 @@
+ 
+         t1 = time.time()
+ 
+-        empty_input = self.output_space.get_origin_batch(num_examples)
+-        h_state = sharedX(empty_input)
+-
+-        default_z = T.zeros_like(h_state) + self.b
+-
+         theano_rng = make_theano_rng(None, numpy_rng.randint(2 ** 16),
+                                      which_method="binomial")
+ 
+-        h_exp = T.nnet.softmax(default_z)
+-
+-        h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
+-
+-        h_state = sharedX( self.output_space.get_origin_batch(
+-            num_examples))
+-
++        h_exp = T.nnet.softmax(self.bias)
++        if self.normalized_D is None:
++            h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
++        else:
++            h_sample = theano_rng.multinomial(n = self.normalized_D, pvals = h_exp, dtype = h_exp.dtype)
++        h_state = sharedX( np.zeros((num_examples, self.n_labels), dtype='float32'))
+ 
+         t2 = time.time()
+ 
+@@ -4401,7 +4405,10 @@
+ 
+         h_exp = T.nnet.softmax(default_z)
+ 
+-        h_sample = theano_rng.multinomial(pvals=h_exp, dtype=h_exp.dtype)
++        if self.normalized_D is None:
++            h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
++        else:
++            h_sample = theano_rng.multinomial(n = self.normalized_D, pvals = h_exp, dtype = h_exp.dtype)
+ 
+         return h_sample
+ 
+@@ -4484,3 +4491,296 @@
+ 
+         return masked_cost.mean()
+ 
++class CompositeVisualLayer(VisibleLayer):
++    """
++        A Layer constructing by aligning several other Layer
++        objects side by side
++
++        Parameters
++        ----------
++        components : WRITEME
++            A list of layers that are combined to form this layer
++        components_to_output : None or dict mapping int to list of int
++            Should be None unless the input space is a CompositeSpace
++            If inputs_to_components[i] contains j, it means input i will
++            be given as input to component j.
++            If an input dodes not appear in the dictionary, it will be given
++            to all components.
++
++            This field allows one CompositeLayer to have another as input
++            without forcing each component to connect to all members
++            of the CompositeLayer below. For example, you might want to
++            have both densely connected and convolutional units in all
++            layers, but a convolutional unit is incapable of taking a
++            non-topological input space.
++    """
++
++
++    def __init__(self, layer_name, components, components_to_output = None):
++        self.layer_name = layer_name
++
++        self.components = list(components)
++        assert isinstance(components, list)
++        for component in components:
++            assert isinstance(component, VisibleLayer)
++        self.num_components = len(components)
++        self.components_to_output = components_to_output
++        self.input_space = CompositeSpace([component.input_space for component in self.components])
++        self.output_space = CompositeSpace([ component.get_output_space() for component in self.components ])
++        
++    def make_state(self, num_examples, numpy_rng):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        return tuple(component.make_state(num_examples, numpy_rng) for
++                component in self.components)
++
++    def get_total_state_space(self):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        return CompositeSpace([component.get_total_state_space() for component in self.components])
++
++    def set_batch_size(self, batch_size):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        for component in self.components:
++            component.set_batch_size(batch_size)
++
++    def set_dbm(self, dbm):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        for component in self.components:
++            component.set_dbm(dbm)
++
++    def mf_update(self, state_above, layer_above = None, double_weights = False, iter_name = None):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        rval = []
++
++        for i, component in enumerate(self.components):
++            class RoutingLayer(object):
++                def __init__(self, idx, layer):
++                    self.__dict__.update(locals())
++                    del self.self
++                    self.layer_name = 'route_'+str(idx)+'_'+layer.layer_name
++
++                def downward_message(self, state):
++                    return self.layer.downward_message(state)[self.idx]
++
++            if layer_above is not None:
++                cur_layer_above = RoutingLayer(i, layer_above)
++            else:
++                cur_layer_above = None
++
++            mf_update = component.mf_update(state_above = state_above,
++                                            layer_above = cur_layer_above,
++                                            double_weights = double_weights,
++                                            iter_name = iter_name)
++
++            rval.append(mf_update)
++
++        return tuple(rval)
++
++    def init_mf_state(self):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        return tuple([component.init_mf_state() for component in self.components])
++
++
++    def get_weight_decay(self, coeffs):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        return sum([component.get_weight_decay(coeff) for component, coeff
++            in safe_zip(self.components, coeffs)])
++
++    def upward_state(self, total_state):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        return tuple([component.upward_state(elem)
++            for component, elem in
++            safe_zip(self.components, total_state)])
++
++    
++    def get_l1_act_cost(self, state, target, coeff, eps):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        return sum([ comp.get_l1_act_cost(s, t, c, e) \
++            for comp, s, t, c, e in safe_zip(self.components, state, target, coeff, eps)])
++
++    def get_range_rewards(self, state, coeffs):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        return sum([comp.get_range_rewards(s, c)
++            for comp, s, c in safe_zip(self.components, state, coeffs)])
++
++    def get_params(self):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        return reduce(lambda x, y: safe_union(x, y),
++                [component.get_params() for component in self.components])
++
++    def get_weights_topo(self):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        logger.info('Get topological weights for which layer?')
++        for i, component in enumerate(self.components):
++            logger.info('{0} {1}'.format(i, component.layer_name))
++        x = input()
++        return self.components[int(x)].get_weights_topo()
++
++    def get_monitoring_channels_from_state(self, state):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        rval = OrderedDict()
++
++        for layer, s in safe_zip(self.components, state):
++            d = layer.get_monitoring_channels_from_state(s)
++            for key in d:
++                rval[layer.layer_name+'_'+key] = d[key]
++
++        return rval
++
++    def sample(self, state_below = None, state_above = None,
++            layer_above = None,
++            theano_rng = None):
++        """
++        .. todo::
++
++            WRITEME
++        """
++        rval = []
++
++        for i, component in enumerate(self.components):           
++            class RoutingLayer(object):
++                def __init__(self, idx, layer):
++                    self.__dict__.update(locals())
++                    del self.self
++                    self.layer_name = 'route_'+str(idx)+'_'+layer.layer_name
++                """
++                Todo: Need to check the implementation of the above layer when the state is from a composite space.
++                Check its compatibilty with composite layer (visual and hidden)
++                
++                """
++                def downward_message(self, state):
++                    return self.layer.downward_message(state)[self.idx]
++
++            if layer_above is not None:
++                cur_layer_above = RoutingLayer(i, layer_above)
++            else:
++                cur_layer_above = None
++
++            sample = component.sample(state_above = state_above,
++                                      layer_above = cur_layer_above,
++                                      theano_rng = theano_rng)
++
++            rval.append(sample)
++
++        return tuple(rval)
++
++
++class PretrainedLayer(Layer):
++
++    """
++    
++    
++    A layer whose weights are initialized, and optionally fixed,
++    based on prior training.
++    This is to make a trained DBM compatible with MLP, mostly for finetuning purpos.
++    For now it is only for inference not training.
++    
++    Parameters
++    ----------
++    layer_content : Model
++        Should implement "upward_pass" (RBM and Autoencoder do this)
++    freeze_params: bool
++        If True, regard layer_conent's parameters as fixed
++        If False, they become parameters of this layer and can be
++        fine-tuned to optimize the MLP's cost function.
++    """
++
++    def __init__(self, layer_name, layer_content, freeze_params=False):
++        super(PretrainedLayer, self).__init__()
++        self.__dict__.update(locals())
++        del self.self
++        
++    def set_input_space(self, space):
++
++        assert self.get_input_space() == space
++
++    def get_params(self):
++
++        if self.freeze_params:
++            return []
++        """
++        Return a list for the compatability of loading a multiple layers case
++        Todo: test if errors occur when a list is return when only one hidden layer is added to the model
++        """
++        return [layer.get_params for layer in self.layer_content.hidden_layers]
++
++    def get_input_space(self):
++
++        return self.layer_content.get_input_space()
++
++    def get_output_space(self):
++
++        return self.layer_content.hidden_layers[-1].get_total_state_space()
++
++    def get_layer_monitoring_channels(self, state_below=None,
++                                      state=None, targets=None):
++        return OrderedDict([])
++
++    def upward_state(self, state_below):
++        
++        H_hat = self.layer_content.inference_procedure.mf(state_below, niter=1)
++
++        return H_hat[-1]
++    
++    def downward_state(self, total_state):
++        
++        H_hat = self.layer_content.down_pass(total_state, niter = 1, return_history = False, real_visible = False)
++
++        return H_hat
++    
++    def fprop(self, state_below):
++        
++        return self.layer_content.upward_pass(state_below)
++    
++    
+\ No newline at end of file
+diff --git a/pylearn2/training_algorithms/sgd.py b/pylearn2/training_algorithms/sgd.py
+index 495a0fd..15cba86 100644
+--- a/pylearn2/training_algorithms/sgd.py
++++ b/pylearn2/training_algorithms/sgd.py
+@@ -449,19 +449,34 @@
+                                     num_batches=self.batches_per_iter)
+ 
+         on_load_batch = self.on_load_batch
+-        for batch in iterator:
+-            for callback in on_load_batch:
+-                callback(*batch)
+-            self.sgd_update(*batch)
+-            # iterator might return a smaller batch if dataset size
+-            # isn't divisible by batch_size
+-            # Note: if data_specs[0] is a NullSpace, there is no way to know
+-            # how many examples would actually have been in the batch,
+-            # since it was empty, so actual_batch_size would be reported as 0.
+-            actual_batch_size = flat_data_specs[0].np_batch_size(batch)
+-            self.monitor.report_batch(actual_batch_size)
+-            for callback in self.update_callbacks:
+-                callback(self)
++        """
++        Modified by Ning Zhang: adding the compatibility for composite datasets, 
++        which may be the case for multimodal learning
++        
++        """
++        if type(iterator) is list:
++            for batch in zip(*iterator):
++                for callback in on_load_batch:
++                    callback(*batch)
++                self.sgd_update(*batch)
++                actual_batch_size = flat_data_specs[0].np_batch_size(batch)
++                self.monitor.report_batch(actual_batch_size)
++                for callback in self.update_callbacks:
++                    callback(self)
++        else:                 
++            for batch in iterator:
++                for callback in on_load_batch:
++                    callback(*batch)
++                self.sgd_update(*batch)
++                # iterator might return a smaller batch if dataset size
++                # isn't divisible by batch_size
++                # Note: if data_specs[0] is a NullSpace, there is no way to know
++                # how many examples would actually have been in the batch,
++                # since it was empty, so actual_batch_size would be reported as 0.
++                actual_batch_size = flat_data_specs[0].np_batch_size(batch)
++                self.monitor.report_batch(actual_batch_size)
++                for callback in self.update_callbacks:
++                    callback(self)
+ 
+         # Make sure none of the parameters have bad values
+         for param in self.params:
+diff --git a/pylearn2/utils/data_writer.py b/pylearn2/utils/data_writer.py
+new file mode 100644
+index 0000000..c4293a5
+--- /dev/null
++++ b/pylearn2/utils/data_writer.py
+@@ -0,0 +1,132 @@
++'''
++Created on Aug 1, 2015
++
++@author: ningzhang
++'''
++
++import os
++import numpy as np
++
++class DataWriter(object):
++  """Class for writing lots of data to disk."""
++
++  def __init__(self, names, output_dir, memory, numdim_list, datasize=None):
++    """Initializes a Data Writer.
++    Args:
++      names: Names used to identify the different data components. Will be used
++        as prefixes for the output files.
++      output_dir: Directory where the data will be written.
++      memory: Size of each output chunk.
++      numdim_list: Number of dimensions in each data component.
++      datasize: Total number of data vectors that will be written. Having this
++        number helps to save memory.
++    """
++    typesize = 4  # Fixed for now.
++    self.typesize = typesize
++    self.names = names
++    self.output_dir = output_dir
++    if not os.path.isdir(output_dir):
++      os.makedirs(output_dir)
++    self.numdim_list = numdim_list
++    self.data_len = len(names)
++    assert self.data_len == len(numdim_list)
++    numdims = sum(numdim_list)
++    total_memory = GetBytes(memory)
++    if datasize is not None:
++      total_memory_needed = datasize * typesize * numdims
++      total_memory = min(total_memory, total_memory_needed)
++    self.buffer_index = [0] * self.data_len
++    self.dump_count = [0] * self.data_len
++    self.data_written = [0] * self.data_len
++    self.max_dumps = []
++    self.buffers = []
++    for numdim in numdim_list:
++      memory = (total_memory * numdim) / numdims
++      numvecs = memory / (typesize * numdim)
++      data = np.zeros((numvecs, numdim), dtype='float32')
++      self.buffers.append(data)
++      if datasize is not None:
++        max_dump = datasize / numvecs
++        if datasize % numvecs > 0:
++          max_dump += 1
++        self.max_dumps.append(max_dump)
++      else:
++        self.max_dumps.append(1)
++
++  def AddToBuffer(self, i, data):
++    """Add data into buffer i."""
++    buf = self.buffers[i]
++    buf_index = self.buffer_index[i]
++    datasize = data.shape[0]
++    assert datasize + buf_index <= buf.shape[0], 'Not enough space in buffer.'
++    buf[buf_index:buf_index + datasize] = data
++    self.buffer_index[i] += datasize
++
++  def FreeSpace(self, i):
++    """Return amount of free space left."""
++    return self.buffers[i].shape[0] - self.buffer_index[i]
++
++  def HasSpace(self, i, datasize):
++    """Return True if buffer i has space to add datasize more vectors."""
++    buf = self.buffers[i]
++    buf_index = self.buffer_index[i]
++    return buf.shape[0] > buf_index + datasize
++  
++  def IsFull(self, i):
++    return not self.HasSpace(i, 0)
++
++  def DumpBuffer(self, i):
++    """Write the contents of buffer i to disk."""
++    buf_index = self.buffer_index[i]
++    if buf_index == 0:
++      return
++    buf = self.buffers[i]
++    output_prefix = os.path.join(self.output_dir, self.names[i])
++    output_filename = '%s-%.5d-of-%.5d' % (
++      output_prefix, (self.dump_count[i] + 1), self.max_dumps[i])
++    self.dump_count[i] += 1
++    np.save(output_filename, buf[:buf_index])
++    self.buffer_index[i] = 0
++    self.data_written[i] += buf_index
++
++  def SubmitOne(self, i, d):
++    datasize = d.shape[0]
++    free_space = self.FreeSpace(i)
++    if datasize > free_space:
++      self.AddToBuffer(i, d[:free_space])
++    else:
++      self.AddToBuffer(i, d)
++    if self.IsFull(i):
++      self.DumpBuffer(i)
++    if datasize > free_space:
++      self.SubmitOne(i, d[free_space:])
++
++  def Submit(self, data):
++    assert len(data) == self.data_len
++    for i, d in enumerate(data):
++      self.SubmitOne(i, d)
++
++  def Commit(self):
++    for i in range(self.data_len):
++      self.DumpBuffer(i)
++    return self.data_written
++    
++def GetBytes(mem_str):
++  """Converts human-readable numbers to bytes.
++
++  E.g., converts '2.1M' to 2.1 * 1024 * 1024 bytes.
++  """
++  unit = mem_str[-1]
++  val = float(mem_str[:-1])
++  if unit == 'G':
++    val *= 1024 * 1024 * 1024
++  elif unit == 'M':
++    val *= 1024 * 1024
++  elif unit == 'K':
++    val *= 1024
++  else:
++    try:
++      val = int(mem_str)
++    except Exception:
++      print '%s is not a valid way of writing memory size.' % mem_str
++  return int(val) 
+diff --git a/pylearn2/utils/performance_metric.py b/pylearn2/utils/performance_metric.py
+new file mode 100644
+index 0000000..ef47e5f
+--- /dev/null
++++ b/pylearn2/utils/performance_metric.py
+@@ -0,0 +1,51 @@
++'''
++Created on Aug 9, 2015
++
++@author: ningzhang
++
++This file defines some evaluation scores often used in our experiments.
++'''
++
++import numpy as np
++
++def ScoreOneLabel(self, preds, targets):
++    """
++    Computes Average precision and precision at 50 for one label.
++    
++    This code is copied from Nitish's deepnet.
++    actually it can be easily extend to deal with the whole matrix.
++    
++    Here we retain the structure temporally for simplicity .
++    We may absorb the ComputeSocre into this method in the future.
++    """
++    
++    targets_sorted = targets[(-preds.T).argsort().flatten(),:]
++    cumsum = targets_sorted.cumsum()
++    prec = cumsum / np.arange(1.0, 1 + targets.shape[0])
++    total_pos = float(sum(targets))
++    if total_pos == 0:
++        total_pos = 1e-10
++    ap = np.dot(prec, targets_sorted) / total_pos
++    prec50 = prec[50]
++    return ap, prec50
++
++def ComputeScore(self, preds, targets):
++    
++    """
++    Computes Average precision and precision at 50.
++    """
++    assert preds.shape == targets.shape
++    numdims = preds.shape[1]
++    ap = 0
++    prec = 0
++    ap_list = []
++    prec_list = []
++    for i in range(numdims):
++        this_ap, this_prec = self.ScoreOneLabel(preds[:,i], targets[:,i])
++        ap_list.append(this_ap)
++        prec_list.append(this_prec)
++        ap += this_ap
++        prec += this_prec
++    ap /= numdims
++    prec /= numdims
++    return ap, prec, ap_list, prec_list
+\ No newline at end of file
