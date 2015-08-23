@@ -174,8 +174,10 @@ class Flickr_Image_Toronto(DenseDesignMatrix):
                     indices = which_sub == 'z' and indices_labelled['z_indices'] or indices_labelled['nnz_indices']
                     
             y = labels[indices[:]]     
-                
-            assert not numpy.any(numpy.isnan(self.y))        
+            
+            # Using sum or min instead of directly traverse all the elements in the ndarray is much faster
+            # because of the optimization of retrieval inside these two functions
+            assert not numpy.isnan(numpy.min(self.y))        
             super(Flickr_Image_Toronto, self).__init__(
                 X=X, y = y 
             )

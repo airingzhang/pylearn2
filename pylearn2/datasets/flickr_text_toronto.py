@@ -70,7 +70,11 @@ class Flickr_Text_Toronto(SparseDataset):
         m, d = npzfile['shape']
         assert m == (which_cat == 'labelled' and 20449 or 851050)
         assert d == 2000
-
+        
+        assert not numpy.isnan(numpy.min(npzfile['data'])) 
+        assert not numpy.isnan(numpy.min(npzfile['indices']))
+        assert not numpy.isnan(numpy.min(npzfile['indptr']))
+        
         X = sp.csr_matrix((npzfile['data'], npzfile['indices'],
                                   npzfile['indptr']),
                                   shape=tuple(list(npzfile['shape'])))    
@@ -78,7 +82,7 @@ class Flickr_Text_Toronto(SparseDataset):
         super(Flickr_Text_Toronto, self).__init__(
                 from_scipy_sparse_dataset = X
         )  
-        assert not numpy.any(numpy.isnan(self.X))  
+         
         #=======================================================================
         # dealing with label if label is indicated to included by
         # which_set and which_sub

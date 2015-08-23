@@ -114,8 +114,10 @@ class BinarizedMNIST(DenseDesignMatrix):
             X=X,
             view_converter=DefaultViewConverter(shape=(28, 28, 1))
         )
-
-        assert not numpy.any(numpy.isnan(self.X))
+        
+        # using min is faster
+        #assert not numpy.any(numpy.isnan(self.X))
+        assert not numpy.isnan(numpy.min(self.X))
 
         if start is not None:
             assert start >= 0

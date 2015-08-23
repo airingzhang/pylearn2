@@ -1350,7 +1350,12 @@ class BinaryVectorMaxPool(HiddenLayer):
             raise NotImplementedError()
 
         default_z = T.alloc(self.b, num_examples, self.detector_layer_dim)
-
+        
+        if self.D is not None:
+            default_z = T.alloc(self.b * self.D, num_examples, self.detector_layer_dim)
+        else:
+            default_z = T.alloc(self.b, num_examples, self.detector_layer_dim)
+            
         p_exp, h_exp, p_sample, h_sample = max_pool_channels(z=default_z,
                                                              pool_size=self.pool_size,
                                                              theano_rng=theano_rng)
@@ -1431,7 +1436,7 @@ class BinaryVectorMaxPool(HiddenLayer):
     def mf_update(self, state_below, state_above, layer_above = None, double_weights = False, iter_name = None, D = None):
         """
         Modified by Ning Zhang: adding D paramters for replicated softmax layer
-
+         
             WRITEME
         """
 
@@ -4194,12 +4199,10 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
     Parameters
     ----------
-    nvis : int
+    n_labels : int
         Dimension of the space
     bias_from_marginals : pylearn2.datasets.dataset.Dataset
         Dataset, whose marginals are used to initialize the visible biases
-    center : bool
-        If True, use Gregoire Montavon's centering trick
     copies : int
         Use this number of virtual copies of the state. All the copies
         still share parameters. This can be useful for balancing the
@@ -4275,7 +4278,7 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
         if not hasattr(self, 'copies'):
             self.copies = 1
         
-        if hasattr(self, 'normalized_D'):
+        if self.normalized_D is not None:
             return rval * self.copies, self.normalized_D
             
         if D_is_initialized:
@@ -4321,7 +4324,7 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
             rval = theano_rng.multinomial( pvals = h_exp, dtype = h_exp.dtype)
         else:
             rval = theano_rng.multinomial(n = self.D, pvals = h_exp, dtype = h_exp.dtype)
-            rval.sum(axis = 1)
+            rval = rval.sum(axis = 1)
 
         return rval
 
@@ -4358,12 +4361,15 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
         theano_rng = make_theano_rng(None, numpy_rng.randint(2 ** 16),
                                      which_method="binomial")
-
-        h_exp = T.nnet.softmax(self.bias)
+        empty_input = sharedX( np.zeros((num_examples, self.n_labels), dtype='float32'))
+        h_state = T.zeros_like(empty_input) + self.bias
+        h_exp = T.nnet.softmax(h_state)
         if self.normalized_D is None:
             h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
         else:
             h_sample = theano_rng.multinomial(n = self.normalized_D, pvals = h_exp, dtype = h_exp.dtype)
+            h_sample = h_sample.sum(axis = 0)
+            
         h_state = sharedX( np.zeros((num_examples, self.n_labels), dtype='float32'))
 
         t2 = time.time()
@@ -4409,7 +4415,7 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
             h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
         else:
             h_sample = theano_rng.multinomial(n = self.normalized_D, pvals = h_exp, dtype = h_exp.dtype)
-
+            h_sample = h_sample.sum(axis = 0)
         return h_sample
 
     def expected_energy_term(self, state, average, state_below = None, average_below = None):

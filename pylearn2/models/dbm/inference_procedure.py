@@ -252,7 +252,7 @@ class WeightDoubling(InferenceProcedure):
            
             H_hat.append(dbm.hidden_layers[-1].mf_update(
                 state_above=None,
-                state_below = state_below, D = D, double_weight = double_top))
+                state_below = state_below, D = D, double_weights = double_top))
 
         # Make corrections for if we're also running inference on Y
         if Y is not None:
