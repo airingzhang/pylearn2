@@ -2,6 +2,7 @@
 Common DBM Layer classes
 """
 from __future__ import print_function
+from buildtools import update
 
 __authors__ = ["Ian Goodfellow", "Vincent Dumoulin"]
 __copyright__ = "Copyright 2012-2013, Universite de Montreal"
@@ -1402,8 +1403,14 @@ class BinaryVectorMaxPool(HiddenLayer):
 
         return rval * self.copies
 
-    def linear_feed_forward_approximation(self, state_below):
+    def linear_feed_forward_approximation(self, state_below, D = None):
         """
+        Modified by Ning Zhang: for compatability with replicated softmax model.
+        Since this function is mainly called by TorontoSparsity module which start 
+        the calculation from raw dataset, we make D as an input parameter instead of 
+        using the self.D which should have been initialized during the positive phrase.
+        
+        
         Used to implement TorontoSparsity. Unclear exactly what properties of
         it are important or how to implement it for other layers.
 
@@ -1422,9 +1429,12 @@ class BinaryVectorMaxPool(HiddenLayer):
         Parameters
         ----------
         state_below : WRITEME
+        
         """
-
-        z = self.transformer.lmul(state_below) + self.b
+        if D is not None:
+            z = self.transformer.lmul(state_below) + self.b * D
+        else:
+            z = self.transformer.lmul(state_below) + self.b
 
         if self.pool_size != 1:
             # Should probably implement sum pooling for the non-pooled version,
@@ -1465,6 +1475,7 @@ class BinaryVectorMaxPool(HiddenLayer):
             state_below = 2. * state_below
             state_below.name = self.layer_name + '_'+iter_name + '_2state'
         if D is not None:
+            self.D = D
             z = self.transformer.lmul(state_below) + self.b * D 
         else:
             z = self.transformer.lmul(state_below) + self.b
@@ -4323,9 +4334,16 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
         if self.D is None:
             rval = theano_rng.multinomial( pvals = h_exp, dtype = h_exp.dtype)
         else:
-            rval = theano_rng.multinomial(n = self.D, pvals = h_exp, dtype = h_exp.dtype)
-            rval = rval.sum(axis = 1)
-
+            rval = theano_rng.multinomial( n = self.D, pvals = h_exp, dtype = h_exp.dtype)
+            result, update = theano.scan(fn = functools.partial(theano_rng.multinomial(size = (), ndim = None)),
+                                         outputs_info = None, sequences = [self.D, h_exp], non_sequncens = h_exp.dtype)
+            
+            rval = T.matrix('samples')
+            
+            for i in xrange(self.D.shape(0)):
+                temp = theano_rng.multinomial(n = self.D[i], pvals = h_exp[i], dtype = h_exp.dtype)
+                temp = temp.sum(axis = 0)
+                T.set_subtensor(rval[i,:],temp, inplace = True)
         return rval
 
     def mf_update(self, state_above, layer_above):
@@ -4395,27 +4413,31 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
     def make_symbolic_state(self, num_examples, theano_rng):
         """
-        .. todo::
+        If no normalized_D is set, we use theano.tensor.shared_randomstreams instead
+        of MRG_randomstream for convenience because MRG_randomstream.multinomial does
+        not support the case that n is vector and pvals are matrix at the same time.
+        
+        Though such problem can be easily fixed by scan function, we do not use this strategy
+        because of the complexity. 
+        
+        
+        Todo:: using MRG_randomstream to implement this method
 
-            WRITEME
-        """
-        """
-        Returns a symbolic variable containing an actual state
-        (not a mean field state) for this variable.
         """
 
         if self.copies != 1:
             raise NotImplementedError("need to make self.copies samples and average them together.")
 
-        default_z = T.alloc(self.b, num_examples, self.n_classes)
+        default_z = T.alloc(self.bias, num_examples, self.n_labels)
 
         h_exp = T.nnet.softmax(default_z)
 
         if self.normalized_D is None:
             h_sample = theano_rng.multinomial(pvals = h_exp, dtype = h_exp.dtype)
         else:
+            theano_rng = T.shared_randomstreams.RandomStreams(1234)
             h_sample = theano_rng.multinomial(n = self.normalized_D, pvals = h_exp, dtype = h_exp.dtype)
-            h_sample = h_sample.sum(axis = 0)
+
         return h_sample
 
     def expected_energy_term(self, state, average, state_below = None, average_below = None):

@@ -31,7 +31,7 @@ from pylearn2.costs.cost import (
 from pylearn2.models import dbm
 from pylearn2.models.dbm import BinaryVectorMaxPool
 from pylearn2.models.dbm import flatten
-from pylearn2.models.dbm.layer import BinaryVector
+from pylearn2.models.dbm.layer import BinaryVector, ReplicatedSoftMaxLayer
 from pylearn2.models.dbm import Softmax
 from pylearn2 import utils
 from pylearn2.utils import make_name
@@ -1022,6 +1022,11 @@ class TorontoSparsity(Cost):
 
     @wraps(Cost.get_gradients)
     def get_gradients(self, model, data, **kwargs):
+        
+        """
+        Modified by Ning Zhang, for the compatability of replicated softmax model 
+        """
+        
         self.get_data_specs(model)[0].validate(data)
         obj, scratch = self.base_cost.expr(model, data, return_locals=True,
                                            **kwargs)
@@ -1057,7 +1062,11 @@ class TorontoSparsity(Cost):
             else:
                 layer_below = model.hidden_layers[i - 1]
                 state_below = H_hat[i - 1]
-            state_below = layer_below.upward_state(state_below)
+            
+            if type(layer_below) is ReplicatedSoftMaxLayer:
+                state_below, D = layer_below.upward_state(state_below)
+            else:
+                state_below = layer_below.upward_state(state_below)
 
             components = flatten(state)
 
