@@ -124,7 +124,24 @@ class BaseCD(Cost):
                 wrong = T.neq(true, pred)
 
                 rval['recons_misclass'] = T.cast(wrong.mean(), X.dtype)
-
+        
+        
+        """
+        Modified by Ning Zhang, adding validation error (reconstruction error) for DBM
+        Todo: Though it is most straightforward to implement validation error here,
+        it may be better to define do this inside model itself.
+        
+        """
+        
+        if type(model) is dbm.DBM:
+            state_above = model.hidden_layers[0].downward_state(q[0])
+            vis_sample = model.visible_layer.sample(state_above=state_above,
+                                                       layer_above=model.hidden_layers[0],
+                                                       theano_rng=self.theano_rng)
+            err = (X - vis_sample) **2
+            rval['validation_error'] = T.cast(err.sum(axis = 1).mean(), X.dtype)
+            if type(model.visible_layer) is not ReplicatedSoftMaxLayer:
+                rval['neg_loglikelihood'] = T.cast(model.visible_layer.recons_cost(X,vis_sample), X.dtype)
         return rval
 
     @wraps(Cost.get_gradients)

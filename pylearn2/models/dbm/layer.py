@@ -2,7 +2,6 @@
 Common DBM Layer classes
 """
 from __future__ import print_function
-from buildtools import update
 
 __authors__ = ["Ian Goodfellow", "Vincent Dumoulin"]
 __copyright__ = "Copyright 2012-2013, Universite de Montreal"
@@ -1249,7 +1248,7 @@ class BinaryVectorMaxPool(HiddenLayer):
         
         if D is not None:
             self.D = D
-            z = self.transformer.lmul(state_below) + self.b * D
+            z = self.transformer.lmul(state_below) + T.dot(D, T.stack(self.b))
         else:
             z = self.transformer.lmul(state_below) + self.b 
         p, h, p_sample, h_sample = max_pool_channels(z,
@@ -1310,7 +1309,7 @@ class BinaryVectorMaxPool(HiddenLayer):
         theano_rng = make_theano_rng(None, numpy_rng.randint(2 ** 16), which_method="binomial")
         
         if self.D is not None:
-            default_z = T.zeros_like(h_state) + self.b * self.D
+            default_z = T.zeros_like(h_state) + T.dot(self.D, T.stack(self.b))
         else:
             default_z = T.zeros_like(h_state) + self.b
 
@@ -1349,11 +1348,9 @@ class BinaryVectorMaxPool(HiddenLayer):
 
         if self.copies != 1:
             raise NotImplementedError()
-
-        default_z = T.alloc(self.b, num_examples, self.detector_layer_dim)
         
         if self.D is not None:
-            default_z = T.alloc(self.b * self.D, num_examples, self.detector_layer_dim)
+            default_z = T.alloc(T.dot(self.D, T.stack(self.b)), num_examples, self.detector_layer_dim)
         else:
             default_z = T.alloc(self.b, num_examples, self.detector_layer_dim)
             
@@ -1392,7 +1389,7 @@ class BinaryVectorMaxPool(HiddenLayer):
         # Specifically, our terms are -u^T W d - b^T d where u is the upward state of layer below
         # and d is the downward state of this layer
         if D is not None:
-            bias_term = T.dot(downward_state, self.b * D)
+            bias_term = T.dot(downward_state, self.b) * D.sum(axis = 1)
         else:
             bias_term = T.dot(downward_state, self.b)
         weights_term = (self.transformer.lmul(state_below) * downward_state).sum(axis=1)
@@ -1432,7 +1429,7 @@ class BinaryVectorMaxPool(HiddenLayer):
         
         """
         if D is not None:
-            z = self.transformer.lmul(state_below) + self.b * D
+            z = self.transformer.lmul(state_below) + T.dot(D, T.stack(self.b))
         else:
             z = self.transformer.lmul(state_below) + self.b
 
@@ -1476,7 +1473,8 @@ class BinaryVectorMaxPool(HiddenLayer):
             state_below.name = self.layer_name + '_'+iter_name + '_2state'
         if D is not None:
             self.D = D
-            z = self.transformer.lmul(state_below) + self.b * D 
+            # stack helps to transform a vector to a matrix
+            z = self.transformer.lmul(state_below) + T.dot(D, T.stack(self.b))
         else:
             z = self.transformer.lmul(state_below) + self.b
         
@@ -2410,8 +2408,6 @@ class GaussianVisLayer(VisibleLayer):
 
         if use_sum:
             return masked_cost.mean(axis=0).sum()
-
-        return masked_cost.mean()
 
         return masked_cost.mean()
 
@@ -4252,7 +4248,9 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
         
         if normalized_D is not None:
             self.D = normalized_D
-            
+        # this for sample function    
+        self.theano_rng = T.shared_randomstreams.RandomStreams(1234)   
+         
     def get_biases(self):
         """
         Returns
@@ -4296,7 +4294,7 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
             assert(self.D is not None)
             D = self.D
         else:
-            D = total_state.sum(axis = 1)
+            D = total_state.sum(axis = 1,keepdims = True)
             self.D = D
             
         return rval * self.copies, D
@@ -4334,7 +4332,16 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
         if self.D is None:
             rval = theano_rng.multinomial( pvals = h_exp, dtype = h_exp.dtype)
         else:
-            rval = theano_rng.multinomial( n = self.D, pvals = h_exp, dtype = h_exp.dtype)
+            """
+            self.D is saved as a matrix, therefore rval is saved as a 3-dimension matrix,
+            which is not accepted by the input_space of VisibleLayer
+            Since right now I don't know which method should be used to reduce the matrix to 
+            a vector, I take a shortcut making use of sum with keepdims = Flase
+            """
+            D = self.D.sum(axis = 1)
+            #here use self.theano_rng not input theano_rng
+            rval = self.theano_rng.multinomial( n = D, pvals = h_exp, dtype = h_exp.dtype)
+            """
             result, update = theano.scan(fn = functools.partial(theano_rng.multinomial(size = (), ndim = None)),
                                          outputs_info = None, sequences = [self.D, h_exp], non_sequncens = h_exp.dtype)
             
@@ -4344,6 +4351,7 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
                 temp = theano_rng.multinomial(n = self.D[i], pvals = h_exp[i], dtype = h_exp.dtype)
                 temp = temp.sum(axis = 0)
                 T.set_subtensor(rval[i,:],temp, inplace = True)
+            """
         return rval
 
     def mf_update(self, state_above, layer_above):
@@ -4479,7 +4487,8 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
 
     def recons_cost(self, V, V_hat_unmasked, drop_mask = None, use_sum=False):
         """
-        .. todo::
+        TODO:
+        This method may not fit well with MP training, need test in the future. 
 
             WRITEME
         """
@@ -4499,17 +4508,14 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
             real, = owner.inputs
             owner = real.owner
             op = owner.op
-
-        if not hasattr(op, 'scalar_op'):
-            raise ValueError("Expected V_hat_unmasked to be generated by an Elemwise op, got "+str(op)+" of type "+str(type(op)))
-        assert isinstance(op.scalar_op, T.nnet.sigm.ScalarSigmoid)
-        z ,= owner.inputs
+        assert isinstance(owner.inputs[3].owner.op, T.nnet.Softmax)
+        z = owner.inputs[3]
         if block_grad:
             z = block_gradient(z)
 
         if V.ndim != V_hat.ndim:
             raise ValueError("V and V_hat_unmasked should have same ndim, but are %d and %d." % (V.ndim, V_hat.ndim))
-        unmasked_cost = V * T.nnet.softplus(-z) + (1 - V) * T.nnet.softplus(z)
+        unmasked_cost = V * z + (1 - V) * (1 - z)
         assert unmasked_cost.ndim == V_hat.ndim
 
         if drop_mask is None:
@@ -4517,7 +4523,20 @@ class ReplicatedSoftMaxLayer(VisibleLayer):
         else:
             masked_cost = drop_mask * unmasked_cost
 
-        return masked_cost.mean()
+        return masked_cost.sum(axis = 1).mean()
+    
+    def get_monitoring_channels(self):
+        """
+        .. todo::
+
+            WRITEME
+        """
+        if self.D is not None:
+            return OrderedDict([
+                  ('D_max'  , self.D.max()),
+                  ('D_mean' , self.D.mean()),
+                  ('D_min'  , self.D.min()),
+                ])
 
 class CompositeVisualLayer(VisibleLayer):
     """

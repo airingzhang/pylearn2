@@ -130,9 +130,15 @@ class DBM(Model):
 
         # This condition could be relaxed, but current code assumes it
         assert len(self.hidden_layers) > 0
+        
+        """
+        Here it doesn't matter whether to recalculate the D base on the samples from visible layer
+        or to use the initial D calculated from the raw data, because when we do the sampling on visible layer
+        we have included the information of D into the process. Therefore, Ds are guaranteed to be the same.
+        """
         D = None
         if type(self.visible_layer) is ReplicatedSoftMaxLayer:
-            state_below,D = self.visible_layer.upward_state(V)
+            state_below,D = self.visible_layer.upward_state(V, D_is_initialized = True)
         else:
             state_below=self.visible_layer.upward_state(V)
             
@@ -203,7 +209,7 @@ class DBM(Model):
         
         D = None
         if type(self.visible_layer) is ReplicatedSoftMaxLayer:
-            state_below, D =self.visible_layer.upward_state(V)
+            state_below, D =self.visible_layer.upward_state(V,D_is_initialized = True)
         else:
             state_below =self.visible_layer.upward_state(V)
         terms.append(self.hidden_layers[0].expected_energy_term(
